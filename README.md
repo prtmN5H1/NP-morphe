@@ -29,8 +29,8 @@
 
 1. **Install
 
-   - NP Morphe** from (https://github.com/prtmN5H1/NP-morphe).
-   Or
+   - NP Morphe** from [github.com/prtmN5H1/NP-morphe] (https://github.com/prtmN5H1/NP-morphe).
+Or
    - Morphe** from [morphe.software](https://morphe.software).
 
 
