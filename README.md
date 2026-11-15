@@ -27,10 +27,10 @@
 # 💊 Morphe
 
 
-1. **Install
+1. **Install 
 
-   - NP Morphe** from https://github.com/prtmN5H1/NP-morphe .
-Or
+   - NP Morphe** from https://github.com/prtmN5H1/NP-morphe.
+
    - Morphe** from [morphe.software](https://morphe.software).
 
 
