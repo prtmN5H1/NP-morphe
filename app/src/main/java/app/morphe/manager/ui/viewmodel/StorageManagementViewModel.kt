@@ -42,6 +42,14 @@ class StorageManagementViewModel(
         prefs.savePatchedApks.update(enabled)
     }
 
+    fun setRollbackBackupsEnabled(enabled: Boolean) = viewModelScope.launch {
+        prefs.rollbackBackupsEnabled.update(enabled)
+    }
+
+    fun setRollbackAutoCleanupEnabled(enabled: Boolean) = viewModelScope.launch {
+        prefs.rollbackAutoCleanupEnabled.update(enabled)
+    }
+
     fun clearHttpCache(onDone: (Long) -> Unit = {}) = viewModelScope.launch {
         onDone(storageStatsRepository.clearHttpCache())
     }

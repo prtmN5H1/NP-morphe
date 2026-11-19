@@ -185,6 +185,12 @@ data class BatchPatchItem(
     val patchedFile: File? = null,
     val installOutcome: BatchInstallOutcome? = null,
     val installMessage: String? = null,
+    /** Exact file URL when the base APK came from the in-app browser. */
+    val downloadSourceUrl: String? = null,
+    /** Private DownloadManager item to remove after this build is successfully installed. */
+    val downloadManagerId: Long? = null,
+    /** Original provider filename, before a picked APK was copied into private storage. */
+    val baseFileName: String? = null,
     /** Package the app ended up under, which patching may have renamed. */
     val installedPackageName: String? = null
 ) {

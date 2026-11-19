@@ -5,6 +5,9 @@
 
 package app.morphe.manager.ui.screen.settings.system
 
+import androidx.compose.ui.res.stringResource
+import app.morphe.manager.R
+import app.morphe.manager.ui.screen.shared.ConfirmDialog
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import app.morphe.manager.ui.screen.shared.DialogHost
@@ -43,6 +46,20 @@ fun InstallerFlowDialogs(
             onOpenShizuku = installViewModel::openShizukuApp,
             shizukuStatusProvider = installViewModel::getShizukuStatus,
             onRequestShizukuPermission = installViewModel::requestShizukuPermission
+        )
+    }
+
+    androidx.lifecycle.compose.LifecycleEventEffect(androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+        installViewModel.onManagerResumed()
+    }
+
+    DialogHost(target = installViewModel.rollbackCleanupPromptPackage) { (appName, packageName) ->
+        ConfirmDialog(
+            title = stringResource(R.string.installer_rollback_verify_title),
+            message = stringResource(R.string.installer_rollback_verify_message, appName),
+            primaryText = stringResource(R.string.installer_rollback_clear_backup),
+            onConfirm = { installViewModel.clearRollbackBackup(packageName) },
+            onDismiss = installViewModel::dismissRollbackCleanupPrompt
         )
     }
 }

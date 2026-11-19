@@ -807,6 +807,8 @@ class PatchBundleRepository(
 
     suspend fun reset() = dispatchAction("Reset") { state ->
         dao.reset()
+        prefs.bundleAutoUpdatesDisabled.update(emptySet())
+        prefs.bundleVersionPins.update(emptySet())
         (state as? BundleState.Ready)?.sources?.keys?.forEach {
             directoryOf(it).deleteRecursively()
             forgetBundle(it)
@@ -859,10 +861,14 @@ class PatchBundleRepository(
                     target.covers(other.target)
     }
 
-    private fun predicateFor(target: UpdateTarget): (RemotePatchBundle) -> Boolean = { bundle ->
-        bundle.uid in target.uids ||
-                target.custom?.invoke(bundle) == true ||
-                (target.allEnabled && bundle.enabled && !isSourceBlocked(bundle))
+    private fun predicateFor(target: UpdateTarget): (RemotePatchBundle) -> Boolean {
+        val autoUpdatesDisabled = prefs.bundleAutoUpdatesDisabled.getBlocking()
+        return { bundle ->
+            bundle.uid in target.uids ||
+                    target.custom?.invoke(bundle) == true ||
+                    (target.allEnabled && bundle.enabled && !isSourceBlocked(bundle) &&
+                            bundle.uid.toString() !in autoUpdatesDisabled)
+        }
     }
 
     private fun mergeUpdateRequests(requests: List<UpdateRequest>): UpdateRequest {
@@ -939,10 +945,13 @@ class PatchBundleRepository(
             // After store is updated, trigger update for bundles that were just enabled
             if (beingEnabledUids.isNotEmpty()) {
                 Log.d(tag, "Triggering update for re-enabled bundles: $beingEnabledUids")
+                val autoUpdatesDisabled = prefs.bundleAutoUpdatesDisabled.get()
                 startRemoteUpdateJob(
                     UpdateRequest(
                         target = UpdateTarget(custom = { bundle ->
-                            val matches = bundle.uid in beingEnabledUids && bundle.enabled
+                            val matches = bundle.uid in beingEnabledUids && bundle.enabled &&
+                                    (bundle.state is PatchBundleSource.State.Missing ||
+                                            bundle.uid.toString() !in autoUpdatesDisabled)
                             Log.d(tag, "  predicate check uid=${bundle.uid} inEnabled=${bundle.uid in beingEnabledUids} enabled=${bundle.enabled} → $matches")
                             matches
                         })
@@ -968,6 +977,14 @@ class PatchBundleRepository(
             }
 
             val removedUids = bundles.map { it.uid }.toSet()
+            prefs.bundleAutoUpdatesDisabled.update(
+                prefs.bundleAutoUpdatesDisabled.get() - removedUids.map { it.toString() }.toSet()
+            )
+            prefs.bundleVersionPins.update(
+                prefs.bundleVersionPins.get().filterNot { entry ->
+                    entry.substringBefore('|').toIntOrNull() in removedUids
+                }.toSet()
+            )
             metadataFetchErrorsFlow.update { it - removedUids }
 
             val (affectedCount, remaining) = cancelRemoteUpdates(removedUids)
@@ -1784,6 +1801,95 @@ class PatchBundleRepository(
         )
     }
 
+    /** Enables or disables automatic release checks; enabling also releases any tag pin. */
+    suspend fun setAutoUpdateEnabled(uids: Collection<Int>, enabled: Boolean) {
+        if (uids.isEmpty()) return
+        val disabled = prefs.bundleAutoUpdatesDisabled.get().toMutableSet()
+        val pins = prefs.bundleVersionPins.get().mapNotNull(::parseVersionPin).toMap().toMutableMap()
+        val restored = mutableListOf<RemotePatchBundle>()
+        uids.forEach { uid ->
+            if (!enabled) {
+                disabled.add(uid.toString())
+                return@forEach
+            }
+            val pinnedSource = pins[uid]
+            if (pinnedSource != null) {
+                val source = replaceRemoteEndpoint(uid, pinnedSource)
+                if (source == null) return@forEach
+                pins.remove(uid)
+                restored += source
+            }
+            disabled.remove(uid.toString())
+        }
+        prefs.bundleAutoUpdatesDisabled.update(disabled)
+        prefs.bundleVersionPins.update(pins.map { (uid, url) -> "$uid|$url" }.toSet())
+        if (restored.isNotEmpty()) {
+            update(*restored.toTypedArray(), allowUnsafeNetwork = prefs.allowMeteredUpdates.get())
+        }
+    }
+
+    /** Available GitHub release tags for a source whose manifest URL has a movable branch. */
+    suspend fun availableSourceVersions(uid: Int): List<String> {
+        val bundle = (store.state.value as? BundleState.Ready)?.sources?.get(uid) as? JsonPatchBundle
+            ?: return emptyList()
+        if (bundle.endpointBranch == null) return emptyList()
+        return remoteBundleServices.api.getGitHubReleaseTags(bundle.browsePageUrl)
+    }
+
+    /** Pins [uid] to [tag], and disables automatic checks until the user follows the source again. */
+    suspend fun pinSourceVersion(uid: Int, tag: String) {
+        val bundle = (store.state.value as? BundleState.Ready)?.sources?.get(uid) as? JsonPatchBundle
+            ?: return
+        val selectedTag = tag.trim().takeIf(String::isNotEmpty) ?: return
+        val tags = remoteBundleServices.api.getGitHubReleaseTags(bundle.browsePageUrl)
+        val exactTag = tags.firstOrNull { it == selectedTag }
+            ?: tags.firstOrNull { it.normalizeVersion() == selectedTag.normalizeVersion() }
+            ?: return
+
+        val existingPins = prefs.bundleVersionPins.get().mapNotNull(::parseVersionPin).toMap()
+        val baseEndpoint = existingPins[uid] ?: bundle.endpoint
+        val pinnedEndpoint = bundle.endpointForRef(exactTag)
+        if (pinnedEndpoint == bundle.endpoint) return
+
+        val changed = replaceRemoteEndpoint(uid, pinnedEndpoint) ?: return
+        val pins = existingPins.toMutableMap().apply { put(uid, baseEndpoint) }
+        prefs.bundleVersionPins.update(pins.map { (sourceUid, endpoint) -> "$sourceUid|$endpoint" }.toSet())
+        prefs.bundleAutoUpdatesDisabled.update(
+            prefs.bundleAutoUpdatesDisabled.get() + uid.toString()
+        )
+        update(changed, showMessage = true, allowUnsafeNetwork = true)
+    }
+
+    /** Changes only the persisted endpoint while keeping the installed bundle until its replacement arrives. */
+    private suspend fun replaceRemoteEndpoint(uid: Int, endpoint: String): RemotePatchBundle? {
+        val normalized = runCatching { normalizeRemoteBundleUrl(endpoint) }.getOrNull() ?: return null
+        var changed: RemotePatchBundle? = null
+        dispatchAction("Change pinned source endpoint ($uid)", await = true) { state ->
+            val ready = state as? BundleState.Ready ?: return@dispatchAction state
+            val current = ready.sources[uid] as? RemotePatchBundle ?: return@dispatchAction state
+            val entity = dao.all().firstOrNull { it.uid == uid } ?: return@dispatchAction state
+            if (entity.source.toString().equals(normalized, ignoreCase = true)) {
+                changed = current
+                return@dispatchAction state
+            }
+            val updated = entity.copy(source = SourceInfo.from(normalized))
+            dao.upsert(updated)
+            current.clearChangelogCache()
+            forgetBundle(uid)
+            metadataFetchErrorsFlow.update { it - uid }
+            val reloaded = doReload()
+            changed = reloaded.sources[uid] as? RemotePatchBundle
+            reloaded
+        }
+        return changed
+    }
+
+    private fun parseVersionPin(value: String): Pair<Int, String>? {
+        val uid = value.substringBefore('|').toIntOrNull() ?: return null
+        val endpoint = value.substringAfter('|', "").takeIf(String::isNotBlank) ?: return null
+        return uid to endpoint
+    }
+
     /**
      * Trusts the key the latest bundle of [source] is signed with, after an update refused it for
      * not being signed by the key the source trusted, and updates the source again.
@@ -1866,11 +1972,15 @@ class PatchBundleRepository(
         if (!allowMeteredUpdates && networkInfo.isMetered()) return null
 
         return try {
+            val autoUpdatesDisabled = prefs.bundleAutoUpdatesDisabled.get()
             // Only sources an update can reach, or the notification points at one that never comes
             val remoteBundles = (store.state.value as? BundleState.Ready)?.sources?.values
                 .orEmpty()
                 .filterIsInstance<RemotePatchBundle>()
-                .filter { it.enabled && !isSourceBlocked(it) }
+                .filter {
+                    it.enabled && !isSourceBlocked(it) &&
+                            it.uid.toString() !in autoUpdatesDisabled
+                }
 
             if (remoteBundles.isEmpty()) return null
 
@@ -2286,26 +2396,100 @@ class PatchBundleRepository(
     /**
      * Export all third-party remote bundles as a list of snapshots.
      */
-    suspend fun exportCustomBundles(): List<BundleSnapshot> {
+    suspend fun exportCustomBundles(uids: Set<Int>? = null): List<BundleSnapshot> {
         // Only the toggles the user set are exported. Prerelease implied by a "dev" endpoint is
         // derived from the URL again on import, so it must not be baked into the snapshot
         val prereleaseUids = prefs.bundlePrereleasesEnabled.get()
         val experimentalUids = prefs.bundleExperimentalVersionsEnabled.get()
+        val autoUpdateDisabledUids = prefs.bundleAutoUpdatesDisabled.get()
+        val versionPins = prefs.bundleVersionPins.get().mapNotNull(::parseVersionPin).toMap()
 
         return dao.all()
-            .filter { it.uid != DEFAULT_SOURCE_UID && it.source !is Source.Local }
+            .filter {
+                it.uid != DEFAULT_SOURCE_UID &&
+                    it.source !is Source.Local &&
+                    (uids == null || it.uid in uids)
+            }
             .map { entity ->
                 BundleSnapshot(
                     name = entity.name,
                     displayName = entity.displayName,
                     source = entity.source.toString(),
-                    autoUpdate = true,
+                    autoUpdate = entity.uid.toString() !in autoUpdateDisabledUids,
                     enabled = entity.enabled,
                     sortOrder = entity.sortOrder,
                     createdAt = entity.createdAt,
                     updatedAt = entity.updatedAt,
+                    pinnedSource = versionPins[entity.uid],
+                    pinnedVersion = if (entity.uid in versionPins) {
+                        (entity.source as? Source.Remote)?.url?.toString()?.let { JsonPatchBundle.extractBranch(it) }
+                    } else null,
                     prerelease = entity.uid.toString() in prereleaseUids,
                     experimentalVersions = entity.uid.toString() in experimentalUids,
+                )
+            }
+    }
+
+    /** Source snapshots for one compact share link; installed GitHub tags can be pinned in it. */
+    suspend fun exportSourcesForShare(uids: Set<Int>, pinInstalledVersions: Boolean): List<BundleSnapshot> {
+        val snapshots = exportCustomBundles(uids)
+        if (!pinInstalledVersions) return snapshots
+        val ready = store.state.value as? BundleState.Ready ?: return snapshots
+        val bundlesByEndpoint = ready.sources.values.filterIsInstance<RemotePatchBundle>()
+            .associateBy { it.endpoint.lowercase(Locale.US) }
+        val pins = prefs.bundleVersionPins.get().mapNotNull(::parseVersionPin).toMap()
+
+        return snapshots.map { snapshot ->
+            val bundle = bundlesByEndpoint[snapshot.source.lowercase(Locale.US)] as? JsonPatchBundle
+                ?: error("${snapshot.displayName ?: snapshot.name} cannot be version-locked; share source links instead")
+            require(bundle.endpointBranch != null) {
+                "${snapshot.displayName ?: snapshot.name} does not use a versioned GitHub source; share source links instead"
+            }
+            val installedVersion = bundle.installedVersionSignature
+                ?: error("${snapshot.displayName ?: snapshot.name} has no installed version to lock")
+            val tags = remoteBundleServices.api.getGitHubReleaseTags(bundle.browsePageUrl)
+            val tag = tags.firstOrNull { it == installedVersion }
+                ?: tags.firstOrNull { it.normalizeVersion() == installedVersion.normalizeVersion() }
+                ?: error("Could not find a GitHub release tag matching ${snapshot.displayName ?: snapshot.name} version $installedVersion")
+            val base = pins[bundle.uid] ?: bundle.endpoint
+            val pinnedEndpoint = bundle.endpointForRef(tag)
+            snapshot.copy(
+                source = pinnedEndpoint,
+                autoUpdate = false,
+                pinnedSource = base,
+                pinnedVersion = tag
+            )
+        }
+    }
+
+    data class BundleArchiveArtifact(
+        val source: String,
+        val path: String,
+        val file: File,
+        val versionSignature: String?,
+        val signingKey: String?,
+    )
+
+    data class EmbeddedBundleArtifact(
+        val file: File,
+        val versionSignature: String?,
+        val signingKey: String?,
+    )
+
+    /** Current downloaded bundle files for selected remote sources, named by stable UID. */
+    suspend fun exportBundleArtifacts(uids: Set<Int>): List<BundleArchiveArtifact> {
+        if (uids.isEmpty()) return emptyList()
+        return (store.state.value as? BundleState.Ready)?.sources?.values
+            .orEmpty()
+            .filterIsInstance<RemotePatchBundle>()
+            .filter { it.uid in uids && it.patchesJarFile.isFile }
+            .map {
+                BundleArchiveArtifact(
+                    source = it.endpoint,
+                    path = "bundles/${it.uid}.jar",
+                    file = it.patchesJarFile,
+                    versionSignature = it.installedVersionSignature,
+                    signingKey = it.signingKey,
                 )
             }
     }
@@ -2334,6 +2518,7 @@ class PatchBundleRepository(
     suspend fun importCustomBundles(
         snapshots: List<BundleSnapshot>,
         mode: ImportMode = ImportMode.Merge,
+        embeddedArtifacts: Map<String, EmbeddedBundleArtifact> = emptyMap(),
     ) {
         // Empty snapshot in Merge mode is a no-op; in Replace mode it still needs to clear existing customs
         if (snapshots.isEmpty() && mode == ImportMode.Merge) return
@@ -2356,7 +2541,10 @@ class PatchBundleRepository(
             // sources does not commit the preference store twice per source
             val prereleaseUids = prefs.bundlePrereleasesEnabled.get().toMutableSet()
             val experimentalUids = prefs.bundleExperimentalVersionsEnabled.get().toMutableSet()
+            val autoUpdateDisabledUids = prefs.bundleAutoUpdatesDisabled.get().toMutableSet()
+            val versionPins = prefs.bundleVersionPins.get().mapNotNull(::parseVersionPin).toMap().toMutableMap()
             var togglesChanged = false
+            var pinsChanged = false
 
             // Replace mode: remove custom remotes whose endpoint is not in the backup
             if (mode == ImportMode.Replace) {
@@ -2372,6 +2560,8 @@ class PatchBundleRepository(
                     removedUids.forEach { uid ->
                         togglesChanged = prereleaseUids.toggleUid(uid, false) || togglesChanged
                         togglesChanged = experimentalUids.toggleUid(uid, false) || togglesChanged
+                        togglesChanged = autoUpdateDisabledUids.remove(uid.toString()) || togglesChanged
+                        pinsChanged = versionPins.remove(uid) != null || pinsChanged
                     }
                     metadataFetchErrorsFlow.update { it - removedUids }
                     val (affectedCount, remaining) = cancelRemoteUpdates(removedUids)
@@ -2401,6 +2591,16 @@ class PatchBundleRepository(
                         updateDb(bundle.uid) { it.copy(enabled = snapshot.enabled) }
                         changedAny = true
                     }
+                    val baseSource = snapshot.pinnedSource?.takeIf(String::isNotBlank)
+                    if (baseSource == null) {
+                        pinsChanged = versionPins.remove(bundle.uid) != null || pinsChanged
+                    } else if (versionPins.put(bundle.uid, baseSource) != baseSource) {
+                        pinsChanged = true
+                    }
+                    togglesChanged = autoUpdateDisabledUids.toggleUid(
+                        bundle.uid,
+                        enabled = !snapshot.autoUpdate
+                    ) || togglesChanged
                     // Reconcile prerelease and experimental-version toggles by endpoint,
                     // so they survive a cross-device import
                     snapshot.prerelease?.let {
@@ -2418,6 +2618,13 @@ class PatchBundleRepository(
                 }.getOrNull() ?: return@forEach
 
                 if (!knownEndpoints.add(normalizedUrl.lowercase(Locale.US))) return@forEach
+                val baseEndpoint = snapshot.pinnedSource
+                    ?.let { runCatching { normalizeRemoteBundleUrl(it) }.getOrNull() }
+                if (baseEndpoint != null && (
+                        !knownEndpoints.add(baseEndpoint.lowercase(Locale.US)) ||
+                                existingSourceUid(baseEndpoint) != null
+                    )
+                ) return@forEach
                 if (toBlocklistKey(normalizedUrl)?.let(blocklistRepository::isBlocked) == true) return@forEach
 
                 val created = createEntity(
@@ -2429,20 +2636,40 @@ class PatchBundleRepository(
                     updatedAt = snapshot.updatedAt,
                     enabled = snapshot.enabled,
                 )
+                embeddedArtifacts[normalizedUrl.lowercase(Locale.US)]?.let { artifact ->
+                    runCatching {
+                        val source = created.load() as? RemotePatchBundle
+                            ?: error("Archived bundle is not a remote source")
+                        source.installArchivedBundle(artifact.file, artifact.signingKey)
+                        updateDb(created.uid) { it.copy(versionHash = artifact.versionSignature) }
+                    }.onFailure { throwable ->
+                        Log.w(tag, "Could not restore archived bundle for ${created.name}; will fetch it", throwable)
+                    }
+                }
                 // New bundles get fresh UIDs, so carry the toggles over by UID
+                togglesChanged = autoUpdateDisabledUids.toggleUid(
+                    created.uid,
+                    enabled = !snapshot.autoUpdate
+                ) || togglesChanged
                 if (snapshot.prerelease == true) {
                     togglesChanged = prereleaseUids.toggleUid(created.uid, true) || togglesChanged
                 }
                 if (snapshot.experimentalVersions == true) {
                     togglesChanged = experimentalUids.toggleUid(created.uid, true) || togglesChanged
                 }
+                snapshot.pinnedSource?.takeIf(String::isNotBlank)?.let { baseSource ->
+                    versionPins[created.uid] = baseSource
+                    pinsChanged = true
+                }
                 changedAny = true
             }
 
-            if (togglesChanged) {
+            if (togglesChanged || pinsChanged) {
                 prefs.edit {
                     prefs.bundlePrereleasesEnabled.value = prereleaseUids.toSet()
                     prefs.bundleExperimentalVersionsEnabled.value = experimentalUids.toSet()
+                    prefs.bundleAutoUpdatesDisabled.value = autoUpdateDisabledUids.toSet()
+                    prefs.bundleVersionPins.value = versionPins.map { (uid, endpoint) -> "$uid|$endpoint" }.toSet()
                 }
                 changedAny = true
             }
@@ -2457,8 +2684,11 @@ class PatchBundleRepository(
                     target = UpdateTarget(custom = { bundle ->
                         bundle.uid != DEFAULT_SOURCE_UID &&
                                 // Disabled bundles are not refreshed, but ones that were never
-                                // downloaded still need their initial fetch
+                                // downloaded still need their initial fetch. A source with automatic
+                                // updates off is not refreshed during restore once it is installed.
                                 (bundle.enabled || bundle.state is PatchBundleSource.State.Missing) &&
+                                (bundle.state is PatchBundleSource.State.Missing ||
+                                        bundle.uid.toString() !in autoUpdateDisabledUids) &&
                                 snapshots.any { s ->
                                     bundle.endpoint.equals(
                                         runCatching { normalizeRemoteBundleUrl(s.source) }.getOrNull(),

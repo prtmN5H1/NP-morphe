@@ -20,11 +20,15 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import app.morphe.manager.R
 import app.morphe.manager.domain.repository.StorageStats
+import app.morphe.manager.domain.repository.RollbackBackup
+import app.morphe.manager.domain.repository.RollbackBackupRepository
 import app.morphe.manager.ui.screen.settings.SettingsSubpage
 import app.morphe.manager.ui.screen.shared.*
+import app.morphe.manager.ui.viewmodel.InstallViewModel
 import app.morphe.manager.ui.viewmodel.StorageManagementViewModel
 import app.morphe.manager.util.formatBytes
 import app.morphe.manager.util.openAppDetailsSettings
+import app.morphe.manager.util.withVersionPrefix
 import com.composables.icons.materialsymbols.MaterialSymbols
 import com.composables.icons.materialsymbols.rounded.*
 import org.koin.androidx.compose.koinViewModel
@@ -33,7 +37,7 @@ import org.koin.compose.koinInject
 /**
  * Where the manager's storage goes and what clears it, on a page of its own, see
  * [SettingsSubpage.STORAGE]. The saved APKs of each kind open over it, see [ApkManagementPage].
- * A search of the settings only goes through whether APKs are kept, the rest being no setting.
+ * Storage preferences and the durable previous-version copies live here too.
  */
 @Composable
 fun StorageSettings(viewModel: StorageManagementViewModel = koinViewModel()) {
@@ -46,6 +50,7 @@ fun StorageSettings(viewModel: StorageManagementViewModel = koinViewModel()) {
 
     if (LocalSettingsSearch.current != null) {
         SavedApksSection(viewModel = viewModel, stats = stats, onOpen = { apkType = it })
+        RollbackBackupSettingsSection(viewModel)
     } else {
         StorageOverview(
             viewModel = viewModel,
@@ -161,6 +166,7 @@ private fun StorageOverview(
         }
 
         SavedApksSection(viewModel = viewModel, stats = stats, onOpen = onOpenApks)
+        RollbackBackupSettingsSection(viewModel)
 
         SettingsSection(
             title = stringResource(R.string.settings_system_storage_caches),
@@ -272,6 +278,164 @@ private fun SavedApksSection(
     }
 }
 
+/** Durable rollback copies, their global controls, and one-tap restore. */
+@Composable
+private fun RollbackBackupSettingsSection(viewModel: StorageManagementViewModel) {
+    val repository = koinInject<RollbackBackupRepository>()
+    val installViewModel: InstallViewModel = koinViewModel()
+    val backups by repository.backups.collectAsStateWithLifecycle()
+    val backupEnabled by viewModel.prefs.rollbackBackupsEnabled.getAsState()
+    val autoCleanupEnabled by viewModel.prefs.rollbackAutoCleanupEnabled.getAsState()
+    val scope = rememberCoroutineScope()
+    var showBackups by rememberSaveable { mutableStateOf(false) }
+    var pendingDelete by remember { mutableStateOf<RollbackBackup?>(null) }
+    var confirmClearAll by remember { mutableStateOf(false) }
+
+    LaunchedEffect(repository) { repository.refresh() }
+
+    DialogHost(visible = showBackups) {
+        ListDialog(
+            onDismissRequest = { showBackups = false },
+            header = {
+                ListDialogHeader(
+                    icon = { modifier ->
+                        ListDialogHeaderIcon(
+                            icon = MaterialSymbols.Rounded.History,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = modifier
+                        )
+                    },
+                    title = stringResource(R.string.settings_system_rollback_manage),
+                    subtitle = pluralStringResource(
+                        R.plurals.settings_system_rollback_backup_count,
+                        backups.size,
+                        backups.size
+                    ),
+                    alwaysShowBand = true
+                )
+            },
+            footer = {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = Defaults.SpaceLarge),
+                    verticalArrangement = Arrangement.spacedBy(Defaults.SpaceSmall)
+                ) {
+                    if (backups.isNotEmpty()) {
+                        TextButton(
+                            onClick = { confirmClearAll = true },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(stringResource(R.string.settings_system_rollback_clear_all_title))
+                        }
+                    }
+                    AppDialogOutlinedButton(
+                        text = stringResource(R.string.close),
+                        onClick = { showBackups = false },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+        ) {
+            DialogScrollColumn(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(Defaults.SpaceSmall)
+            ) {
+                if (backups.isEmpty()) {
+                    Footnote(
+                        text = stringResource(R.string.settings_system_rollback_empty),
+                        tone = SemanticTone.Neutral,
+                        modifier = Modifier.fillMaxWidth().padding(Defaults.SpaceLarge)
+                    )
+                } else {
+                    backups.forEach { backup ->
+                        SettingsItem(
+                            onClick = {
+                                installViewModel.rollback(backup.packageName)
+                                showBackups = false
+                            },
+                            icon = MaterialSymbols.Rounded.History,
+                            title = backup.packageName,
+                            subtitle = stringResource(
+                                R.string.settings_system_rollback_version_detail,
+                                backup.versionName?.withVersionPrefix() ?: stringResource(R.string.version),
+                                backup.versionCode
+                            ),
+                            trailingContent = {
+                                IconButton(onClick = { pendingDelete = backup }) {
+                                    Icon(
+                                        imageVector = MaterialSymbols.Rounded.Delete,
+                                        contentDescription = stringResource(R.string.delete),
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                }
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    DialogHost(target = pendingDelete) { backup ->
+        ConfirmDialog(
+            title = stringResource(R.string.settings_system_rollback_delete_title),
+            message = stringResource(R.string.settings_system_rollback_delete_message, backup.packageName),
+            primaryText = stringResource(R.string.delete),
+            isPrimaryDestructive = true,
+            onConfirm = {
+                pendingDelete = null
+                scope.launch { repository.delete(backup.packageName) }
+            },
+            onDismiss = { pendingDelete = null }
+        )
+    }
+
+    DialogHost(visible = confirmClearAll) {
+        ConfirmDialog(
+            title = stringResource(R.string.settings_system_rollback_clear_all_title),
+            message = stringResource(R.string.settings_system_rollback_clear_all_message),
+            primaryText = stringResource(R.string.clear),
+            isPrimaryDestructive = true,
+            onConfirm = {
+                confirmClearAll = false
+                scope.launch { repository.clear() }
+            },
+            onDismiss = { confirmClearAll = false }
+        )
+    }
+
+    SettingsSection(
+        title = stringResource(R.string.settings_system_rollback_title),
+        icon = MaterialSymbols.Rounded.History
+    ) {
+        SettingsGroup {
+            SettingsSwitchItem(
+                checked = backupEnabled,
+                onToggle = { viewModel.setRollbackBackupsEnabled(!backupEnabled) },
+                icon = MaterialSymbols.Rounded.Save,
+                title = stringResource(R.string.settings_system_rollback_backup_enabled),
+                subtitle = stringResource(R.string.settings_system_rollback_backup_enabled_description)
+            )
+            SettingsSwitchItem(
+                checked = autoCleanupEnabled,
+                onToggle = { viewModel.setRollbackAutoCleanupEnabled(!autoCleanupEnabled) },
+                icon = MaterialSymbols.Rounded.Delete_sweep,
+                title = stringResource(R.string.settings_system_rollback_cleanup_enabled),
+                subtitle = stringResource(R.string.settings_system_rollback_cleanup_enabled_description)
+            )
+            SettingsItem(
+                onClick = { showBackups = true },
+                icon = MaterialSymbols.Rounded.Folder_open,
+                title = stringResource(R.string.settings_system_rollback_manage),
+                subtitle = pluralStringResource(
+                    R.plurals.settings_system_rollback_backup_count,
+                    backups.size,
+                    backups.size
+                )
+            )
+        }
+    }
+}
+
 /**
  * Whether APKs of one kind are kept, over the row opening those already kept. The row stays while
  * keeping is off, as what was kept before is still there to clear.
@@ -347,6 +511,7 @@ private fun CacheActionRow(
 private fun StorageStats.toSegments(): List<StorageSegment> {
     val originalLabel = stringResource(R.string.settings_system_original_apks_title)
     val patchedLabel = stringResource(R.string.settings_system_patched_apks_title)
+    val rollbackLabel = stringResource(R.string.settings_system_rollback_title)
     val bundlesLabel = stringResource(R.string.settings_system_storage_patch_bundles_title)
     val keystoreLabel = stringResource(R.string.settings_system_storage_keystore_title)
     val appDataLabel = stringResource(R.string.settings_system_storage_app_data_title)
@@ -357,6 +522,7 @@ private fun StorageStats.toSegments(): List<StorageSegment> {
     return listOf(
         StorageSegment("original", originalLabel, originalApksBytes, StorageColors.OriginalApks),
         StorageSegment("patched", patchedLabel, patchedApksBytes, StorageColors.PatchedApks),
+        StorageSegment("rollback", rollbackLabel, rollbackBackupBytes, StorageColors.RollbackBackups),
         StorageSegment("bundles", bundlesLabel, patchBundlesBytes, StorageColors.PatchBundles),
         StorageSegment("keystore", keystoreLabel, keystoreBytes, StorageColors.Keystore),
         StorageSegment("appdata", appDataLabel, appDataBytes, StorageColors.AppData),

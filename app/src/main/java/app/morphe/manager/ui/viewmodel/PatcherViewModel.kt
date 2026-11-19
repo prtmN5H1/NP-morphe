@@ -178,6 +178,9 @@ class PatcherViewModel(
     /** Whether the build is mounted over the stock app rather than installed. */
     val usingMountInstall = input.useMount
 
+    /** Temporary browser download, deleted only once Android confirms the patched app installed. */
+    val downloadManagerId: Long? = input.downloadManagerId
+
     /**
      * How the finished APK differs from the install this run was aimed at, or null when it lands
      * on that install after all. The name a patch builds under exists only once it has run, so
@@ -952,7 +955,10 @@ class PatcherViewModel(
             onProgress = patchRun::onProgress,
             onTaskProgress = patchRun::onTaskProgress,
             patchSources = patchSourcesForLog,
-            useMount = usingMountInstall
+            useMount = usingMountInstall,
+            downloadSourceUrl = input.downloadSourceUrl,
+            baseFileName = input.baseFileName
+                ?: (selectedForRun as? SelectedApp.Local)?.file?.name
         )
     }
 

@@ -1,0 +1,468 @@
+name: Upstream Sync, Signed Build & Release
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: Build and publish the current fork even when upstream has no new release
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+  issues: write
+  packages: read
+
+concurrency:
+  group: upstream-sync-release-main
+  cancel-in-progress: false
+
+jobs:
+  sync-build-release:
+    name: Sync upstream, build signed APK, and release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CUSTOM_REPOSITORY: prtmN5H1/NP-morphe
+      UPSTREAM_REPOSITORY: MorpheApp/morphe-manager
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Check out custom main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Detect latest upstream tag and merge without losing fork changes
+        id: upstream
+        shell: bash
+        env:
+          FORCE_BUILD: ${{ github.event_name == 'workflow_dispatch' && inputs.force_build == true }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_REPOSITORY" != "$CUSTOM_REPOSITORY" ]]; then
+            echo "::error::This workflow only publishes from $CUSTOM_REPOSITORY."
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+
+          release_json="$RUNNER_TEMP/upstream-releases.json"
+          tags_json="$RUNNER_TEMP/upstream-tags.json"
+          gh api "repos/${UPSTREAM_REPOSITORY}/releases?per_page=100" > "$release_json"
+          gh api "repos/${UPSTREAM_REPOSITORY}/tags?per_page=100" > "$tags_json"
+
+          # Releases may lag tags, so select the highest supported version across both lists.
+          # Keep release metadata when the selected tag also has a published release.
+          latest_upstream="$(python3 - "$release_json" "$tags_json" <<'PY'
+          import json
+          import re
+          import sys
+
+          version_pattern = re.compile(r"^v?(\d+(?:\.\d+){1,3})(?:[-.]([0-9A-Za-z.-]+))?$")
+
+          def version_key(tag):
+              match = version_pattern.fullmatch(tag)
+              if not match:
+                  return None
+              numbers = tuple(int(part) for part in match.group(1).split("."))
+              numbers += (0,) * (4 - len(numbers))
+              prerelease = match.group(2)
+              if prerelease is None:
+                  pre_key = ()
+              else:
+                  pre_key = tuple(
+                      (0, int(part)) if part.isdigit() else (1, part.lower())
+                      for part in prerelease.split(".")
+                  )
+              return (*numbers, 1 if prerelease is None else 0, pre_key)
+
+          with open(sys.argv[1], encoding="utf-8") as source:
+              releases = json.load(source)
+          with open(sys.argv[2], encoding="utf-8") as source:
+              tags = json.load(source)
+
+          release_by_tag = {
+              release["tag_name"]: release
+              for release in releases
+              if not release.get("draft") and version_key(release.get("tag_name", "")) is not None
+          }
+          candidates = set(release_by_tag)
+          candidates.update(
+              tag.get("name", "") for tag in tags
+              if version_key(tag.get("name", "")) is not None
+          )
+          if not candidates:
+              print("{}")
+          else:
+              tag = max(candidates, key=lambda candidate: version_key(candidate))
+              release = release_by_tag.get(tag, {})
+              print(json.dumps({
+                  "tag": tag,
+                  "body": release.get("body") or "",
+                  "published_at": release.get("published_at") or "",
+                  "prerelease": bool(release.get("prerelease", False)),
+              }))
+          PY
+          )"
+          upstream_tag="$(jq -r '.tag // empty' <<<"$latest_upstream")"
+          upstream_body="$(jq -r '.body // empty' <<<"$latest_upstream")"
+          upstream_published_at="$(jq -r '.published_at // empty' <<<"$latest_upstream")"
+          upstream_prerelease="$(jq -r '.prerelease // false' <<<"$latest_upstream")"
+
+          last_synced_tag=""
+          if [[ -f .github/upstream-sync-tag ]]; then
+            last_synced_tag="$(tr -d '\r\n' < .github/upstream-sync-tag)"
+          fi
+
+          force_build="${FORCE_BUILD:-false}"
+          version=""
+          release_tag=""
+          sync_upstream="false"
+          release_notes="$RUNNER_TEMP/upstream-release-notes.md"
+
+          if [[ -z "$upstream_tag" ]]; then
+            if [[ "$force_build" != "true" ]]; then
+              echo "No upstream release or tag was found; nothing to sync."
+              echo "build=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            version="$(sed -nE 's/^version[[:space:]]*=[[:space:]]*//p' app/gradle.properties | head -n1)"
+            if [[ ! "$version" =~ ^[0-9]+(\.[0-9]+){1,3}([.-][0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::Could not read a valid app version for a forced build."
+              exit 1
+            fi
+            release_tag="v${version}"
+            printf 'Forced custom build from main; no upstream tag was available.\n' > "$release_notes"
+            if [[ "$version" == *-* ]]; then upstream_prerelease="true"; fi
+          else
+            if [[ ! "$upstream_tag" =~ ^v?[0-9]+(\.[0-9]+){1,3}([.-][0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::Upstream tag '$upstream_tag' is not a supported manager version tag."
+              exit 1
+            fi
+
+            if [[ "$upstream_tag" == "$last_synced_tag" && "$force_build" != "true" ]]; then
+              echo "Upstream is still at $upstream_tag, already synced."
+              echo "build=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            if [[ "$upstream_tag" == "$last_synced_tag" ]]; then
+              # A forced rebuild reuses the fork's current app version and release tag.
+              version="$(sed -nE 's/^version[[:space:]]*=[[:space:]]*//p' app/gradle.properties | head -n1)"
+              if [[ ! "$version" =~ ^[0-9]+(\.[0-9]+){1,3}([.-][0-9A-Za-z.-]+)?$ ]]; then
+                echo "::error::Could not read a valid app version for a forced build."
+                exit 1
+              fi
+              release_tag="$last_synced_tag"
+              upstream_prerelease="false"
+              if [[ "$version" == *-* ]]; then upstream_prerelease="true"; fi
+            else
+              sync_upstream="true"
+              version="${upstream_tag#v}"
+              release_tag="$upstream_tag"
+              if [[ "$version" == *-* ]]; then upstream_prerelease="true"; fi
+              git fetch --no-tags upstream "+refs/tags/${upstream_tag}:refs/tags/upstream-sync/${upstream_tag}"
+              upstream_ref="refs/tags/upstream-sync/${upstream_tag}"
+              upstream_commit="$(git rev-parse "${upstream_ref}^{commit}")"
+
+              if ! git merge-base --is-ancestor "$upstream_commit" HEAD; then
+                if git merge --no-commit --no-ff "$upstream_ref" > "$RUNNER_TEMP/upstream-merge.log" 2>&1; then
+                  :
+                else
+                  merge_status=$?
+                  conflict_files="$(git diff --name-only --diff-filter=U || true)"
+                  merge_details="$(cat "$RUNNER_TEMP/upstream-merge.log" 2>/dev/null || true)"
+                  git merge --abort || true
+
+                  issue_title="Upstream sync conflict for ${upstream_tag}"
+                  issue_body="$RUNNER_TEMP/upstream-conflict-issue.md"
+                  {
+                    printf 'The scheduled sync could not merge `%s` into `%s`. The local merge was aborted and no release was built.\n\n' "$upstream_tag" "$CUSTOM_REPOSITORY"
+                    printf 'Conflicting files:\n'
+                    if [[ -n "$conflict_files" ]]; then
+                      while IFS= read -r path; do printf -- '- `%s`\n' "$path"; done <<< "$conflict_files"
+                    else
+                      printf -- '- No unmerged paths were reported by Git.\n'
+                    fi
+                    if [[ -n "$merge_details" ]]; then
+                      printf '\nMerge output:\n```text\n%s\n```\n' "$merge_details"
+                    fi
+                    printf '\nResolve these conflicts on `main`, then rerun **Upstream Sync, Signed Build & Release**.\n'
+                  } > "$issue_body"
+
+                  open_issues="$(gh issue list --repo "$CUSTOM_REPOSITORY" --state open --limit 100 --json title)"
+                  if ! jq -e --arg title "$issue_title" 'any(.[]; .title == $title)' <<< "$open_issues" > /dev/null; then
+                    gh issue create --repo "$CUSTOM_REPOSITORY" --title "$issue_title" --body-file "$issue_body"
+                  fi
+                  echo "::error::Upstream merge failed. The merge was aborted and an issue was opened."
+                  exit "$merge_status"
+                fi
+              fi
+
+              missing_custom_state=""
+              constants_file="app/src/main/java/app/morphe/manager/util/Constants.kt"
+              credits_file="app/src/main/java/app/morphe/manager/ui/screen/settings/system/CreditsDialog.kt"
+              if ! grep -Fq 'const val CUSTOM_SOURCE_REPO_URL = "https://github.com/prtmN5H1/NP-morphe"' "$constants_file"; then
+                missing_custom_state+="${constants_file}: custom repository URL missing\n"
+              fi
+              if ! grep -Fq 'const val MANAGER_REPO_URL = CUSTOM_SOURCE_REPO_URL' "$constants_file"; then
+                missing_custom_state+="${constants_file}: updater is no longer pinned to the custom repository\n"
+              fi
+              if ! grep -Fq 'const val MANAGER_RELEASE_JSON_URL = "https://raw.githubusercontent.com/prtmN5H1/NP-morphe/' "$constants_file"; then
+                missing_custom_state+="${constants_file}: stable updater metadata URL is no longer custom\n"
+              fi
+              if ! grep -Fq 'const val MANAGER_PRERELEASE_JSON_URL = "https://raw.githubusercontent.com/prtmN5H1/NP-morphe/' "$constants_file"; then
+                missing_custom_state+="${constants_file}: prerelease updater metadata URL is no longer custom\n"
+              fi
+              if ! grep -Fq 'const val CUSTOM_DEVELOPER_NAME = "prtmN5H1 (NP-morphe)"' "$constants_file"; then
+                missing_custom_state+="${constants_file}: custom developer credit missing\n"
+              fi
+              if ! grep -Fq 'CUSTOM_SOURCE_REPO_URL' "$credits_file"; then
+                missing_custom_state+="${credits_file}: custom repository credit missing\n"
+              fi
+              if [[ ! -f app-release.json ]]; then
+                missing_custom_state+="app-release.json: custom updater metadata file missing\n"
+              fi
+              if ! grep -Fq 'MorpheCatalog' app/src/main/java/app/morphe/manager/ui/screen/sources/AddSourcePanel.kt ||
+                 ! grep -Fq 'exportSourcesForShare' app/src/main/java/app/morphe/manager/domain/repository/PatchBundleRepository.kt ||
+                 ! grep -Fq 'pinSourceVersion' app/src/main/java/app/morphe/manager/domain/repository/PatchBundleRepository.kt ||
+                 ! grep -Fq 'importSourcesArchive' app/src/main/java/app/morphe/manager/ui/viewmodel/ImportExportViewModel.kt ||
+                 ! grep -Fq 'android.intent.action.SEND_MULTIPLE' app/src/main/AndroidManifest.xml; then
+                missing_custom_state+="Custom catalogue, source sharing/version locks, or archive import handlers are missing\n"
+              fi
+              for required_file in \
+                app/src/main/java/app/morphe/manager/domain/repository/PatchHistoryRepository.kt \
+                app/src/main/java/app/morphe/manager/domain/repository/RollbackBackupRepository.kt \
+                app/src/main/java/app/morphe/manager/ui/screen/home/ApkDownloadBrowserDialog.kt; do
+                if [[ ! -f "$required_file" ]]; then
+                  missing_custom_state+="${required_file}: custom feature file missing\n"
+                fi
+              done
+
+              if [[ -n "$missing_custom_state" ]]; then
+                git merge --abort || true
+                issue_title="Upstream sync would remove NP-morphe customizations for ${upstream_tag}"
+                issue_body="$RUNNER_TEMP/upstream-custom-state-issue.md"
+                {
+                  printf 'The upstream merge was aborted because these fork-specific checks failed:\n\n'
+                  printf '%b' "$missing_custom_state"
+                  printf '\nNo changes were pushed and no APK was released. Review the upstream changes, restore the fork customizations, then rerun the workflow.\n'
+                } > "$issue_body"
+                open_issues="$(gh issue list --repo "$CUSTOM_REPOSITORY" --state open --limit 100 --json title)"
+                if ! jq -e --arg title "$issue_title" 'any(.[]; .title == $title)' <<< "$open_issues" > /dev/null; then
+                  gh issue create --repo "$CUSTOM_REPOSITORY" --title "$issue_title" --body-file "$issue_body"
+                fi
+                echo "::error::The upstream merge did not preserve required fork customizations."
+                exit 1
+              fi
+
+              # Keep the manager version aligned to the upstream release tag before building.
+              python3 - "$version" <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          path = pathlib.Path("app/gradle.properties")
+          content = path.read_text()
+          updated, count = re.subn(r"(?m)^version\s*=.*$", f"version = {sys.argv[1]}", content, count=1)
+          if count != 1:
+              raise SystemExit("Could not update app/gradle.properties version")
+          path.write_text(updated)
+          PY
+
+              if git rev-parse -q --verify MERGE_HEAD > /dev/null; then
+                git add app/gradle.properties
+                git commit -m "chore: sync upstream ${upstream_tag}"
+              elif ! git diff --quiet -- app/gradle.properties; then
+                git add app/gradle.properties
+                git commit -m "chore: sync upstream ${upstream_tag}"
+              fi
+            fi
+
+            if [[ -n "$upstream_body" ]]; then
+              printf '%s\n' "$upstream_body" > "$release_notes"
+            else
+              printf 'Built from upstream tag %s.\n' "$upstream_tag" > "$release_notes"
+            fi
+          fi
+
+          echo "build=true" >> "$GITHUB_OUTPUT"
+          echo "sync_upstream=${sync_upstream}" >> "$GITHUB_OUTPUT"
+          echo "upstream_tag=${upstream_tag}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${upstream_prerelease}" >> "$GITHUB_OUTPUT"
+          echo "published_at=${upstream_published_at}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Java
+        if: steps.upstream.outputs.build == 'true'
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: |
+            17
+            25
+            21
+
+      - name: Set up Android SDK
+        if: steps.upstream.outputs.build == 'true'
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
+
+      - name: Cache Gradle
+        if: steps.upstream.outputs.build == 'true'
+        uses: burrunan/gradle-cache-action@v3
+
+      - name: Restore signing keystore
+        if: steps.upstream.outputs.build == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${KEYSTORE_BASE64:-}" ]]; then
+            echo "::error::KEYSTORE_BASE64 is not configured."
+            exit 1
+          fi
+          : "${KEYSTORE_PASSWORD:?KEYSTORE_PASSWORD is not configured.}"
+          : "${KEYSTORE_ENTRY_ALIAS:?KEYSTORE_ENTRY_ALIAS is not configured.}"
+          : "${KEYSTORE_ENTRY_PASSWORD:?KEYSTORE_ENTRY_PASSWORD is not configured.}"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > app/keystore.jks
+          test -s app/keystore.jks
+          keytool -list -keystore app/keystore.jks -storepass "$KEYSTORE_PASSWORD" > /dev/null
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEYSTORE_ENTRY_ALIAS: ${{ secrets.KEYSTORE_ENTRY_ALIAS }}
+          KEYSTORE_ENTRY_PASSWORD: ${{ secrets.KEYSTORE_ENTRY_PASSWORD }}
+
+      - name: Build signed release APK
+        if: steps.upstream.outputs.build == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEYSTORE_ENTRY_ALIAS: ${{ secrets.KEYSTORE_ENTRY_ALIAS }}
+          KEYSTORE_ENTRY_PASSWORD: ${{ secrets.KEYSTORE_ENTRY_PASSWORD }}
+          _JAVA_OPTIONS: '-Djava.awt.headless=true'
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:assembleRelease --stacktrace
+
+          apk_source="$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' -print -quit)"
+          if [[ -z "$apk_source" ]]; then
+            echo "::error::Gradle did not produce a release APK."
+            exit 1
+          fi
+          apk_path="$RUNNER_TEMP/morphe-manager-${{ steps.upstream.outputs.version }}.apk"
+          cp "$apk_source" "$apk_path"
+          apksigner_path="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -print | sort -V | tail -n1)"
+          if [[ -z "$apksigner_path" ]]; then
+            echo "::error::Android apksigner was not found."
+            exit 1
+          fi
+          "$apksigner_path" verify --verbose "$apk_path"
+          echo "APK_PATH=$apk_path" >> "$GITHUB_ENV"
+
+      - name: Prepare fork release metadata and push merged main
+        if: steps.upstream.outputs.build == 'true'
+        shell: bash
+        env:
+          VERSION: ${{ steps.upstream.outputs.version }}
+          RELEASE_TAG: ${{ steps.upstream.outputs.release_tag }}
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.upstream_tag }}
+          PUBLISHED_AT: ${{ steps.upstream.outputs.published_at }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$PUBLISHED_AT" ]]; then PUBLISHED_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"; fi
+          if [[ -n "$UPSTREAM_TAG" ]]; then
+            UPSTREAM_TAG_JSON="$UPSTREAM_TAG"
+            attribution="Built and signed by NP-morphe from upstream tag ${UPSTREAM_TAG}."
+          else
+            UPSTREAM_TAG_JSON=""
+            attribution="Built and signed by NP-morphe as a manually forced custom release."
+          fi
+
+          RELEASE_VERSION="$VERSION" \
+          RELEASE_TAG="$RELEASE_TAG" \
+          UPSTREAM_TAG="$UPSTREAM_TAG_JSON" \
+          RELEASE_PUBLISHED_AT="$PUBLISHED_AT" \
+          RELEASE_NOTES_FILE="$RUNNER_TEMP/upstream-release-notes.md" \
+          RELEASE_ATTRIBUTION="$attribution" \
+          node <<'NODE'
+          const fs = require('fs');
+          const path = 'app-release.json';
+          const metadata = JSON.parse(fs.readFileSync(path, 'utf8'));
+          const version = process.env.RELEASE_VERSION;
+          const tag = process.env.RELEASE_TAG;
+          const upstreamTag = process.env.UPSTREAM_TAG;
+          const notes = fs.readFileSync(process.env.RELEASE_NOTES_FILE, 'utf8').trim();
+          const attribution = process.env.RELEASE_ATTRIBUTION;
+          metadata.version = version;
+          metadata.upstream_tag = upstreamTag || null;
+          metadata.created_at = process.env.RELEASE_PUBLISHED_AT;
+          metadata.download_url = `https://github.com/prtmN5H1/NP-morphe/releases/download/${tag}/morphe-manager-${version}.apk`;
+          // APKs are Android-keystore signed by Gradle; this workflow does not publish a detached GPG signature.
+          metadata.signature_download_url = '';
+          metadata.description = [notes, attribution].filter(Boolean).join('\n\n');
+          fs.writeFileSync(path, `${JSON.stringify(metadata, null, 2)}\n`);
+          NODE
+
+          grep -Fq "https://github.com/prtmN5H1/NP-morphe/releases/download/${RELEASE_TAG}/" app-release.json
+          git add app-release.json
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: prepare custom release ${RELEASE_TAG}"
+          fi
+          # Never stage the signing key; only the ignored local file is present.
+          git check-ignore -q app/keystore.jks
+          git push origin HEAD:main
+
+      - name: Publish or update custom GitHub Release
+        if: steps.upstream.outputs.build == 'true'
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.upstream.outputs.release_tag }}
+          VERSION: ${{ steps.upstream.outputs.version }}
+          IS_PRERELEASE: ${{ steps.upstream.outputs.prerelease }}
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.upstream_tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          notes="$RUNNER_TEMP/release-notes.md"
+          cat "$RUNNER_TEMP/upstream-release-notes.md" > "$notes"
+          if [[ -n "$UPSTREAM_TAG" ]]; then
+            printf '\n\nBuilt and signed by [NP-morphe](https://github.com/prtmN5H1/NP-morphe) from upstream `%s`.\n' "$UPSTREAM_TAG" >> "$notes"
+          else
+            printf '\n\nBuilt and signed by [NP-morphe](https://github.com/prtmN5H1/NP-morphe) from the current custom main branch.\n' >> "$notes"
+          fi
+
+          title="Morphe Manager ${RELEASE_TAG} (NP-morphe)"
+          if gh release view "$RELEASE_TAG" --repo "$CUSTOM_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$APK_PATH" --repo "$CUSTOM_REPOSITORY" --clobber
+            gh release edit "$RELEASE_TAG" --repo "$CUSTOM_REPOSITORY" --title "$title" --notes-file "$notes"
+          elif [[ "$IS_PRERELEASE" == "true" ]]; then
+            gh release create "$RELEASE_TAG" "$APK_PATH" --repo "$CUSTOM_REPOSITORY" --title "$title" --notes-file "$notes" --prerelease
+          else
+            gh release create "$RELEASE_TAG" "$APK_PATH" --repo "$CUSTOM_REPOSITORY" --title "$title" --notes-file "$notes"
+          fi
+
+      - name: Record successfully synced upstream tag
+        if: steps.upstream.outputs.build == 'true' && steps.upstream.outputs.sync_upstream == 'true'
+        shell: bash
+        env:
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.upstream_tag }}
+          RELEASE_TAG: ${{ steps.upstream.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$UPSTREAM_TAG" > .github/upstream-sync-tag
+          git add .github/upstream-sync-tag
+          git commit -m "chore: record synced upstream ${UPSTREAM_TAG}"
+          git check-ignore -q app/keystore.jks
+          git push origin HEAD:main

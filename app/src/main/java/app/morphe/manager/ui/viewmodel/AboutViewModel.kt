@@ -7,6 +7,7 @@ package app.morphe.manager.ui.viewmodel
 
 import androidx.lifecycle.ViewModel
 import app.morphe.manager.ui.screen.shared.autoMirrored
+import app.morphe.manager.util.CUSTOM_SOURCE_REPO_URL
 import app.morphe.manager.util.MORPHE_WEBSITE_URL
 import com.composables.icons.fontawesome.FontAwesome
 import com.composables.icons.fontawesome.brands.*
@@ -33,7 +34,7 @@ class AboutViewModel : ViewModel() {
             ),
             SocialLink(
                 name = "GitHub",
-                url = "https://github.com/MorpheApp"
+                url = CUSTOM_SOURCE_REPO_URL
             ),
             SocialLink(
                 name = "Reddit",

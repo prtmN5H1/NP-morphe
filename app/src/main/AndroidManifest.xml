@@ -117,6 +117,26 @@
                 <data android:mimeType="application/vnd.ms-project" />
             </intent-filter>
 
+            <!-- Open Morphe source archives directly from file managers -->
+            <intent-filter tools:ignore="AppLinkUrlError">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="file" />
+                <data android:scheme="content" />
+                <data android:mimeType="application/vnd.morphe.source-archive" />
+                <data android:mimeType="application/zip" />
+                <data android:mimeType="application/x-zip-compressed" />
+                <data android:mimeType="application/octet-stream" />
+            </intent-filter>
+
+            <!-- Open compact multi-source links shared by Morphe -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="morphe" android:host="sources" android:path="/import" />
+            </intent-filter>
+
             <!-- Receive APK-family files shared via system share sheet (Expert mode) -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
@@ -132,6 +152,24 @@
                 <data android:mimeType="application/apkm" />
                 <data android:mimeType="application/vnd.android.apks" />
                 <data android:mimeType="application/apks" />
+            </intent-filter>
+
+            <!-- Receive Morphe source archives through the Android share sheet -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/vnd.morphe.source-archive" />
+                <data android:mimeType="application/zip" />
+                <data android:mimeType="application/x-zip-compressed" />
+                <data android:mimeType="application/octet-stream" />
+            </intent-filter>
+
+            <!-- Receive combined source share links from other apps or Morphe itself -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
             </intent-filter>
 
             <!-- Batch patching triggered by another app -->

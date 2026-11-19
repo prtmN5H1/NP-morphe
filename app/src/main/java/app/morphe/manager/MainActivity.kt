@@ -73,6 +73,7 @@ import app.morphe.manager.ui.screen.sources.BundleChangelogHost
 import app.morphe.manager.ui.screen.sources.BundleChangelogRequest
 import app.morphe.manager.ui.theme.*
 import app.morphe.manager.ui.viewmodel.HomeViewModel
+import app.morphe.manager.ui.viewmodel.ImportExportViewModel
 import app.morphe.manager.ui.viewmodel.MainViewModel
 import app.morphe.manager.ui.viewmodel.PatcherViewModel
 import app.morphe.manager.util.*
@@ -282,23 +283,58 @@ class MainActivity : ComponentActivity() {
         // Handle APK-family file shared via system share sheet (.apk/.apks/.xapk/.apkm).
         // The name is not checked: senders often drop or change the extension, and the file is
         // read for what it is anyway, with a message when it turns out not to be an APK
-        if (intent?.action == Intent.ACTION_SEND) {
-            val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
-            } else {
+        if (intent?.action == Intent.ACTION_SEND || intent?.action == Intent.ACTION_SEND_MULTIPLE) {
+            val extraStreams = if (intent.action == Intent.ACTION_SEND_MULTIPLE) {
                 @Suppress("DEPRECATION")
-                intent.getParcelableExtra(Intent.EXTRA_STREAM)
+                intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM).orEmpty()
+            } else {
+                val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra(Intent.EXTRA_STREAM)
+                }
+                listOfNotNull(uri)
             }
-            uri?.let { vm.pendingExternalApkUri = it }
+            val clipStreams = intent.clipData?.let { clipData ->
+                (0 until clipData.itemCount).mapNotNull { index -> clipData.getItemAt(index).uri }
+            }.orEmpty()
+            val streams = (extraStreams + clipStreams).distinct()
+            val archiveUris = streams.filter { uri ->
+                intent.type == SOURCE_ARCHIVE_MIMETYPE ||
+                    intent.type in listOf("application/zip", "application/x-zip-compressed") ||
+                    uri.hasSourceArchiveExtension(contentResolver)
+            }
+            if (archiveUris.isNotEmpty()) vm.pendingSourceArchiveUris = archiveUris
+            else if (streams.singleOrNull() != null) vm.pendingExternalApkUri = streams.single()
+            else if (intent.action == Intent.ACTION_SEND) {
+                val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)?.trim().orEmpty()
+                val sharedUri = runCatching { Uri.parse(sharedText) }.getOrNull()
+                if (sharedUri?.scheme == "morphe" && sharedUri.host == "sources" && sharedUri.path == "/import") {
+                    vm.pendingSourceSharePayload = sharedUri.getQueryParameter("payload")
+                        ?.takeIf { it.isNotBlank() }
+                }
+            }
             return
         }
 
         val data = intent?.data ?: return
 
+        if (intent.action == Intent.ACTION_VIEW && data.scheme == "morphe" &&
+            data.host == "sources" && data.path == "/import"
+        ) {
+            vm.pendingSourceSharePayload = data.getQueryParameter("payload")?.takeIf { it.isNotBlank() }
+            return
+        }
+
         // Handle .mpp file open from file manager
         if (intent.action == Intent.ACTION_VIEW && data.scheme in listOf("file", "content")) {
             if (data.hasMppExtension(contentResolver)) {
                 vm.pendingMppUri = data
+            } else if (intent.type == SOURCE_ARCHIVE_MIMETYPE ||
+                intent.type in listOf("application/zip", "application/x-zip-compressed") ||
+                data.hasSourceArchiveExtension(contentResolver)) {
+                vm.pendingSourceArchiveUris = listOf(data)
             }
             // Not .mpp - don't process further regardless
             return
@@ -393,6 +429,23 @@ private fun MorpheManager(vm: MainViewModel) {
             navController.popBackStack(HomeScreen, false)
             homeViewModel.setPendingMpp(uri)
             vm.pendingMppUri = null
+        }
+    }
+
+    val importExportViewModel: ImportExportViewModel = koinViewModel()
+    LaunchedEffect(vm.pendingSourceArchiveUris) {
+        vm.pendingSourceArchiveUris?.let { uris ->
+            navController.popBackStack(HomeScreen, false)
+            uris.forEach { importExportViewModel.importSourcesArchive(it) }
+            vm.pendingSourceArchiveUris = null
+        }
+    }
+
+    LaunchedEffect(vm.pendingSourceSharePayload) {
+        vm.pendingSourceSharePayload?.let { payload ->
+            navController.popBackStack(HomeScreen, false)
+            importExportViewModel.importSourceSharePayload(payload)
+            vm.pendingSourceSharePayload = null
         }
     }
 

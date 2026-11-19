@@ -52,6 +52,9 @@ import app.morphe.manager.domain.bundles.AppVersionStatus
 import app.morphe.manager.domain.bundles.RemotePatchBundle
 import app.morphe.manager.domain.bundles.versionStatus
 import app.morphe.manager.domain.links.AppLinksStatus
+import app.morphe.manager.domain.repository.PatchHistoryRepository
+import app.morphe.manager.domain.repository.RollbackBackup
+import app.morphe.manager.domain.repository.RollbackBackupRepository
 import app.morphe.manager.patcher.patch.PatchInfo
 import app.morphe.manager.patcher.patch.PatchSourceRef
 import app.morphe.manager.ui.screen.settings.system.InstallerFlowDialogs
@@ -210,6 +213,26 @@ fun DialogHostScope.InstalledAppInfoDialog(
     val entered = remember { mutableStateOf(false) }
 
     val scope = rememberCoroutineScope()
+    val patchHistoryRepository = koinInject<PatchHistoryRepository>()
+    val rollbackBackupRepository = koinInject<RollbackBackupRepository>()
+    val patchHistoryEntries by patchHistoryRepository.entries.collectAsStateWithLifecycle()
+    val rollbackBackups by rollbackBackupRepository.backups.collectAsStateWithLifecycle()
+    val historyDisabledApps by homeViewModel.prefs.patchHistoryDisabledApps.getAsState()
+    val rollbackBackupDisabledApps by homeViewModel.prefs.rollbackBackupDisabledApps.getAsState()
+    val rollbackCleanupDisabledApps by homeViewModel.prefs.rollbackAutoCleanupDisabledApps.getAsState()
+    LaunchedEffect(rollbackBackupRepository) { rollbackBackupRepository.refresh() }
+    val rollbackPackageName = installedApp?.currentPackageName ?: packageName
+    val rollbackBackup = rollbackBackups.firstOrNull { it.packageName == rollbackPackageName }
+    val historyPackageNames = remember(packageName, installedApp?.originalPackageName) {
+        setOfNotNull(packageName, installedApp?.originalPackageName)
+    }
+    val appHistoryEntries = remember(patchHistoryEntries, packageName, installedApp?.originalPackageName) {
+        patchHistoryEntries.filter {
+            it.packageName == packageName || it.packageName == installedApp?.originalPackageName
+        }
+    }
+    val appHistoryEnabled = historyPackageNames.none { it in historyDisabledApps }
+    val showClearAppHistory = rememberSaveable { mutableStateOf(false) }
 
     // Bundle data
     val sources by homeViewModel.patchBundleRepository.sources.collectAsStateWithLifecycle()
@@ -336,6 +359,22 @@ fun DialogHostScope.InstalledAppInfoDialog(
     ProvideAccent(infoAccentColor) {
         InstallerFlowDialogs(installViewModel)
 
+        DialogHost(visible = showClearAppHistory.value) {
+            ConfirmDialog(
+                title = stringResource(R.string.patch_history_clear_app),
+                message = stringResource(R.string.patch_history_clear_app_confirm),
+                primaryText = stringResource(R.string.clear),
+                isPrimaryDestructive = true,
+                onConfirm = {
+                    showClearAppHistory.value = false
+                    scope.launch {
+                        historyPackageNames.forEach { patchHistoryRepository.clear(it) }
+                    }
+                },
+                onDismiss = { showClearAppHistory.value = false }
+            )
+        }
+
         // What the pending patch update changed for this app
         BundleChangelogHost(
             request = changelogRequest.value,
@@ -456,6 +495,21 @@ fun DialogHostScope.InstalledAppInfoDialog(
                 AppLinksContent(status = status, accentColor = infoAccentColor)
             }
         }
+        InfoPage.PatchHistory -> InfoSubpage(
+            page = page,
+            subtitle = stringResource(R.string.patch_history_title),
+            actions = listOf(
+                DialogAction(
+                    text = stringResource(R.string.patch_history_clear_app),
+                    icon = MaterialSymbols.Rounded.Delete,
+                    onClick = { showClearAppHistory.value = true },
+                    enabled = appHistoryEntries.isNotEmpty(),
+                    isDestructive = true
+                )
+            )
+        ) {
+            PatchHistoryContent(appHistoryEntries)
+        }
     }
 
     val loadedApp = installedApp?.takeUnless { isLoading }
@@ -564,6 +618,37 @@ fun DialogHostScope.InstalledAppInfoDialog(
                         installedApkSize = viewModel.installedApkSize,
                         installedApkAbis = viewModel.installedApkAbis,
                         onShowPatches = { page = InfoPage.AppliedPatches },
+                        patchHistoryCount = appHistoryEntries.size,
+                        patchHistoryEnabled = appHistoryEnabled,
+                        rollbackBackup = rollbackBackup,
+                        rollbackBackupEnabledForApp = rollbackPackageName !in rollbackBackupDisabledApps,
+                        rollbackCleanupEnabledForApp = rollbackPackageName !in rollbackCleanupDisabledApps,
+                        onShowHistory = { page = InfoPage.PatchHistory },
+                        onPatchHistoryEnabledChange = { enabled ->
+                            scope.launch {
+                                val current = homeViewModel.prefs.patchHistoryDisabledApps.get()
+                                homeViewModel.prefs.patchHistoryDisabledApps.update(
+                                    if (enabled) current - historyPackageNames else current + historyPackageNames
+                                )
+                            }
+                        },
+                        onRollbackBackupEnabledChange = { enabled ->
+                            scope.launch {
+                                val current = homeViewModel.prefs.rollbackBackupDisabledApps.get()
+                                homeViewModel.prefs.rollbackBackupDisabledApps.update(
+                                    if (enabled) current - rollbackPackageName else current + rollbackPackageName
+                                )
+                            }
+                        },
+                        onRollbackCleanupEnabledChange = { enabled ->
+                            scope.launch {
+                                val current = homeViewModel.prefs.rollbackAutoCleanupDisabledApps.get()
+                                homeViewModel.prefs.rollbackAutoCleanupDisabledApps.update(
+                                    if (enabled) current - rollbackPackageName else current + rollbackPackageName
+                                )
+                            }
+                        },
+                        onRollback = { installViewModel.rollback(rollbackPackageName) },
                         onShowChangelog = onShowChangelog.takeIf { updateChangelog == null },
                         onOpenAppLinks = { page = InfoPage.AppLinks },
                         accentColor = infoAccentColor
@@ -1167,6 +1252,16 @@ private fun InfoSection(
     installedApkSize: Long?,
     installedApkAbis: List<String>,
     onShowPatches: () -> Unit,
+    patchHistoryCount: Int,
+    patchHistoryEnabled: Boolean,
+    rollbackBackup: RollbackBackup?,
+    rollbackBackupEnabledForApp: Boolean,
+    rollbackCleanupEnabledForApp: Boolean,
+    onShowHistory: () -> Unit,
+    onPatchHistoryEnabledChange: (Boolean) -> Unit,
+    onRollbackBackupEnabledChange: (Boolean) -> Unit,
+    onRollbackCleanupEnabledChange: (Boolean) -> Unit,
+    onRollback: () -> Unit,
     onShowChangelog: (() -> Unit)?,
     onOpenAppLinks: () -> Unit,
     accentColor: Color,
@@ -1241,6 +1336,57 @@ private fun InfoSection(
                     value = pluralStringResource(R.plurals.patch_count, count, count.toString()),
                     actions = listOf(
                         InfoRowAction(MaterialSymbols.Rounded.List.autoMirrored, stringResource(R.string.view), onShowPatches)
+                    )
+                )
+            }
+
+            InfoRowWithActions(
+                icon = MaterialSymbols.Rounded.History,
+                label = stringResource(R.string.patch_history_title),
+                value = pluralStringResource(
+                    R.plurals.patch_history_entry_count,
+                    patchHistoryCount,
+                    patchHistoryCount.toString()
+                ),
+                actions = listOf(
+                    InfoRowAction(
+                        MaterialSymbols.Rounded.List.autoMirrored,
+                        stringResource(R.string.view),
+                        onShowHistory
+                    )
+                )
+            )
+            ToggleRow(
+                title = stringResource(R.string.patch_history_app_enabled),
+                description = stringResource(R.string.patch_history_app_enabled_description),
+                checked = patchHistoryEnabled,
+                onCheckedChange = onPatchHistoryEnabledChange
+            )
+
+            ToggleRow(
+                title = stringResource(R.string.home_app_info_rollback_backup_enabled),
+                description = stringResource(R.string.home_app_info_rollback_backup_enabled_description),
+                checked = rollbackBackupEnabledForApp,
+                onCheckedChange = onRollbackBackupEnabledChange
+            )
+            ToggleRow(
+                title = stringResource(R.string.home_app_info_rollback_cleanup_enabled),
+                description = stringResource(R.string.home_app_info_rollback_cleanup_enabled_description),
+                checked = rollbackCleanupEnabledForApp,
+                onCheckedChange = onRollbackCleanupEnabledChange
+            )
+
+            rollbackBackup?.let { backup ->
+                InfoRowWithActions(
+                    icon = MaterialSymbols.Rounded.History,
+                    label = stringResource(R.string.home_app_info_rollback_previous_version),
+                    value = backup.versionName?.withVersionPrefix() ?: backup.versionCode.toString(),
+                    actions = listOf(
+                        InfoRowAction(
+                            MaterialSymbols.Rounded.History,
+                            stringResource(R.string.installer_rollback_restore),
+                            onRollback
+                        )
                     )
                 )
             }
@@ -1395,7 +1541,13 @@ private fun installedAppActionGroups(
     // rest beside it as icons and the file's own actions last, as the patcher's result sets them out
     val use = buildList {
         if (canOpen) {
-            add(ActionItem(stringResource(R.string.open), MaterialSymbols.Rounded.Open_in_new.autoMirrored, viewModel::launch))
+            add(
+                ActionItem(
+                    stringResource(R.string.open),
+                    MaterialSymbols.Rounded.Open_in_new.autoMirrored,
+                    { installViewModel.openApp(packageName) }
+                )
+            )
         }
 
         if (viewModel.hasSavedCopy) {
@@ -1795,7 +1947,7 @@ private fun DialogHostScope.MountWarningDialog(
 }
 
 /** The pages of an installed app's information, each opened in place of the first under the same header. */
-private enum class InfoPage { Main, AppliedPatches, AppLinks }
+private enum class InfoPage { Main, AppliedPatches, AppLinks, PatchHistory }
 
 /** A page of an installed app's information besides the first: how the header names it, what it offers and holds. */
 private class InfoSubpage(

@@ -37,6 +37,8 @@ import java.time.ZoneOffset
 private const val GITHUB_DOWNLOAD_PREFIX = "https://github.com/"
 
 private const val GITHUB_RAW_HOST = "raw.githubusercontent.com"
+private const val RELEASES_PER_PAGE = 100
+private const val MAX_RELEASE_TAG_PAGES = 20
 
 /** Whether [url] is a file served from a repository by raw.githubusercontent.com. */
 internal fun isRawGitHubUrl(url: String): Boolean = runCatching {
@@ -361,11 +363,38 @@ class ReleaseAPI(
         )
     }
 
+    /** Release tags for a GitHub source repository, newest first, excluding drafts. */
+    suspend fun getGitHubReleaseTags(repoUrl: String): List<String> {
+        val config = runCatching { parseRepoUrl(repoUrl) }.getOrNull() ?: return emptyList()
+        val tags = linkedSetOf<String>()
+        for (page in 1..MAX_RELEASE_TAG_PAGES) {
+            val releases = githubRequest<List<GitHubRelease>>(
+                config,
+                "releases?per_page=$RELEASES_PER_PAGE&page=$page"
+            ).getOrNull().orEmpty()
+            tags.addAll(releases.asSequence()
+                .filterNot { it.draft }
+                .map { it.tagName }
+                .filter(String::isNotBlank)
+                .toList())
+            if (releases.size < RELEASES_PER_PAGE) break
+        }
+        return tags.toList()
+    }
+
     private fun mapManagerJsonToAsset(
         config: RepoConfig,
         releaseInfo: ManagerReleaseInfo
     ): ReleaseAsset {
         val version = releaseInfo.version.withVersionPrefix()
+        val asset = parseReleaseAssetUrl(releaseInfo.downloadUrl)
+        require(
+            asset != null &&
+                    asset.owner.equals(config.owner, ignoreCase = true) &&
+                    asset.repo.equals(config.name, ignoreCase = true)
+        ) {
+            "Manager update asset must come from ${config.owner}/${config.name}"
+        }
         return ReleaseAsset(
             downloadUrl = releaseInfo.downloadUrl,
             createdAt = parseTimestamp(releaseInfo.createdAt),

@@ -130,6 +130,10 @@ data class PatchFlowSession(
     val installedVersion: String? = null,
     val stockAppInstalled: Boolean? = null,
     val downloadUrl: String? = null,
+    /** DownloadManager item to remove after a successful install; null for permanent Downloads. */
+    val downloadManagerId: Long? = null,
+    /** Provider filename before a picked APK was copied into private storage. */
+    val baseFileName: String? = null,
     /** Sources the app is kept from, which the APK dialog says how to bring back. */
     val hiddenSources: Int = 0
 ) {
@@ -451,6 +455,7 @@ class PatchFlow(
             current.copy(
                 stockAppInstalled = source.hasStockInstall,
                 installedVersion = source.version,
+                baseFileName = source.apk?.let { File(it.apkPath).name } ?: current.baseFileName,
                 installedApk = source.apk
                     .takeIf { offersApk }
                     .patchableBy(current.compatibleVersions)
@@ -477,6 +482,8 @@ class PatchFlow(
             endRun()
             return
         }
+
+        session = session?.copy(baseFileName = File(installedInfo.apkPath).name)
 
         scope.launch {
             processingApkSelection = true
@@ -687,6 +694,9 @@ class PatchFlow(
         scope.launch {
             processingApkSelection = true
             try {
+                val sourceFileName = withContext(Dispatchers.IO) {
+                    uri.displayName(app.contentResolver)
+                }
                 val result = withContext(Dispatchers.IO) {
                     loadLocalApk(uri)
                 }
@@ -698,8 +708,13 @@ class PatchFlow(
                         // says which app it is, as the installed app picker names it by its label
                         session = session?.let { current ->
                             if (current.packageName == null) {
-                                current.copy(appName = appNameFor(result.app.packageName))
-                            } else current
+                                current.copy(
+                                    appName = appNameFor(result.app.packageName),
+                                    baseFileName = sourceFileName ?: current.baseFileName
+                                )
+                            } else {
+                                current.copy(baseFileName = sourceFileName ?: current.baseFileName)
+                            }
                         }
                         // Picked in place of the one held for a warning, which it takes the run over from
                         heldApp?.discard()
@@ -729,6 +744,8 @@ class PatchFlow(
             endRun()
             return
         }
+
+        session = session?.copy(baseFileName = File(savedInfo.filePath).name)
 
         scope.launch {
             processingApkSelection = true
@@ -1306,7 +1323,10 @@ class PatchFlow(
                 // way to learn which install it was started for
                 targetPackageName = session?.repatchPackageName,
                 allowIncompatible = allowIncompatible,
-                useMount = usingMountInstall
+                useMount = usingMountInstall,
+                downloadSourceUrl = session?.downloadUrl,
+                downloadManagerId = session?.downloadManagerId,
+                baseFileName = session?.baseFileName
             )
         )
 
@@ -1566,6 +1586,15 @@ class PatchFlow(
             messages.show(R.string.sources_management_failed_to_open_url)
             endRun()
         }
+    }
+
+    /** Hands an in-app browser download straight to the APK validation and patch flow. */
+    fun handleBrowserApkDownloaded(uri: Uri, downloadUrl: String, downloadManagerId: Long?) {
+        session = session?.copy(
+            downloadUrl = downloadUrl,
+            downloadManagerId = downloadManagerId
+        )
+        handleApkSelection(uri)
     }
 
     /** Starts the flow for [appName], an app no source names, at picking its APK. */

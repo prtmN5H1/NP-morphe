@@ -181,7 +181,8 @@ private fun PatcherScreenContent(
                 inputFile = patcherViewModel.inputFile,
                 inputIsTemporary = patcherViewModel.inputFileIsDisposable,
                 packageName = patcherViewModel.packageName,
-                onPersistApp = patcherViewModel::persistPatchedApp
+                onPersistApp = patcherViewModel::persistPatchedApp,
+                downloadManagerId = patcherViewModel.downloadManagerId
             )
         } else {
             startInstall {
@@ -189,7 +190,8 @@ private fun PatcherScreenContent(
                     outputFile = outputFile,
                     originalPackageName = patcherViewModel.packageName,
                     onPersistApp = patcherViewModel::persistPatchedApp,
-                    autoUninstallOnConflict = automatic
+                    autoUninstallOnConflict = automatic,
+                    downloadManagerId = patcherViewModel.downloadManagerId
                 )
             }
         }

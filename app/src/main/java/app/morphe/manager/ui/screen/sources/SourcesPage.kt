@@ -20,7 +20,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -58,12 +60,14 @@ import app.morphe.manager.ui.screen.home.*
 import app.morphe.manager.ui.screen.patcher.IncompatiblePatcherVersionDialog
 import app.morphe.manager.ui.screen.shared.*
 import app.morphe.manager.ui.viewmodel.HomeViewModel
+import app.morphe.manager.ui.viewmodel.ImportExportViewModel
 import app.morphe.manager.util.*
 import com.composables.icons.materialsymbols.MaterialSymbols
 import com.composables.icons.materialsymbols.rounded.*
 import com.composables.icons.materialsymbols.roundedfilled.*
 import kotlinx.coroutines.launch
 import org.koin.compose.koinInject
+import org.koin.androidx.compose.koinViewModel
 import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyListState
 import java.util.Locale
@@ -95,6 +99,18 @@ fun SourcesPage(
 ) {
     val scope = rememberCoroutineScope()
     val repository = homeViewModel.patchBundleRepository
+    val importExportViewModel: ImportExportViewModel = koinViewModel()
+    val pendingArchiveExportUids = remember { mutableStateOf<Set<Int>?>(null) }
+    val openSourceArchive = rememberAdaptiveFilePicker(
+        mimeTypes = arrayOf(SOURCE_ARCHIVE_MIMETYPE, "application/zip", "application/x-zip-compressed"),
+        customPickerMimeTypes = arrayOf(SOURCE_ARCHIVE_MIMETYPE),
+        onResult = { uri -> uri?.let(importExportViewModel::importSourcesArchive) }
+    )
+    val saveSourceArchive = rememberDocumentSaver(SOURCE_ARCHIVE_MIMETYPE) { uri ->
+        // Set by the selection action before the document picker is launched.
+        pendingArchiveExportUids.value?.let { importExportViewModel.exportSourcesArchive(it, uri) }
+        pendingArchiveExportUids.value = null
+    }
 
     // Replacing the file of a local source keeps its uid, so the patch selection and options
     // stay attached instead of being stranded on a freshly added second source
@@ -140,6 +156,9 @@ fun SourcesPage(
             )
         },
         onDelete = { bundles -> scope.launch { repository.remove(*bundles.toTypedArray()) } },
+        onCreateSourceShareUri = { bundles, pinInstalledVersions ->
+            importExportViewModel.createSourceShareUri(bundles.mapTo(mutableSetOf()) { it.uid }, pinInstalledVersions)
+        },
         onToggleEnabled = { bundles -> scope.launch { repository.disable(*bundles.toTypedArray()) } },
         onUpdate = { bundles ->
             // A local source has nothing to fetch from, so it asks for a replacement file instead,
@@ -176,6 +195,7 @@ private fun SourcesPageContent(
     onHeaderHeightChange: (Dp) -> Unit,
     addSourcePanel: @Composable () -> Unit,
     onDelete: (List<PatchBundleSource>) -> Unit,
+    onCreateSourceShareUri: suspend (List<RemotePatchBundle>, Boolean) -> String,
     // Flips each source, on or off
     onToggleEnabled: (List<PatchBundleSource>) -> Unit,
     onUpdate: (List<PatchBundleSource>) -> Unit,
@@ -195,6 +215,8 @@ private fun SourcesPageContent(
     val activeUpdateUids by patchBundleRepository.activeUpdateUidsFlow.collectAsStateWithLifecycle(emptySet())
     val metadataFetchErrors by patchBundleRepository.metadataFetchErrors.collectAsStateWithLifecycle(emptyMap())
     val experimentalVersionsEnabled by prefs.bundleExperimentalVersionsEnabled.getAsState()
+    val autoUpdatesDisabled by prefs.bundleAutoUpdatesDisabled.getAsState()
+    val versionPins by prefs.bundleVersionPins.getAsState()
     // Every source, not only the enabled ones: a disabled source still answers a patch search
     // and still declares whether it carries experimental targets
     val bundleInfo by patchBundleRepository.allBundlesInfoFlow.collectAsStateWithLifecycle(emptyMap())
@@ -221,6 +243,7 @@ private fun SourcesPageContent(
 
     // The sources a delete waits on confirmation for, one from its card or several from a selection
     val bundlesToDelete = remember { mutableStateOf<List<PatchBundleSource>>(emptyList()) }
+    val bundlesToShare = remember { mutableStateOf<List<RemotePatchBundle>?>(null) }
     // Set when the user flips pre-releases on, from a card or a selection: the switch waits for
     // confirmation first, so the meaning of unstable testing builds is explained before anything changes
     val bundlesToConfirmPrerelease = remember { mutableStateOf<List<PatchBundleSource>>(emptyList()) }
@@ -342,6 +365,24 @@ private fun SourcesPageContent(
     var bundleToTrustKey by remember { mutableStateOf<RemotePatchBundle?>(null) }
     var bundleToChangeLink by remember { mutableStateOf<RemotePatchBundle?>(null) }
     var bundleToShowChangelogUid by remember { mutableStateOf<Int?>(null) }
+    var bundleToSelectVersion by remember { mutableStateOf<JsonPatchBundle?>(null) }
+    var versionsToSelect by remember { mutableStateOf<List<JsonPatchBundle>>(emptyList()) }
+    var availableVersionTags by remember { mutableStateOf<List<String>>(emptyList()) }
+    var loadingVersionTags by remember { mutableStateOf(false) }
+
+    LaunchedEffect(bundleToSelectVersion?.uid) {
+        val bundle = bundleToSelectVersion
+        if (bundle == null) {
+            availableVersionTags = emptyList()
+            loadingVersionTags = false
+        } else {
+            loadingVersionTags = true
+            availableVersionTags = runCatching {
+                patchBundleRepository.availableSourceVersions(bundle.uid)
+            }.getOrDefault(emptyList())
+            loadingVersionTags = false
+        }
+    }
 
     // Switching branches invalidates whatever the changelog dialog is holding, so an open dialog
     // closes rather than keeping entries from the branch that was just left
@@ -361,6 +402,12 @@ private fun SourcesPageContent(
     fun setExperimentalVersions(bundles: List<PatchBundleSource>, useExperimental: Boolean) {
         scope.launch {
             patchBundleRepository.setUseExperimentalVersions(bundles.uids(), useExperimental)
+        }
+    }
+
+    fun setAutoUpdate(bundles: List<PatchBundleSource>, enabled: Boolean) {
+        scope.launch {
+            patchBundleRepository.setAutoUpdateEnabled(bundles.map { it.uid }, enabled)
         }
     }
 
@@ -443,6 +490,12 @@ private fun SourcesPageContent(
                     )
                 }
                 TitleAction(
+                    icon = MaterialSymbols.Rounded.Upload_file,
+                    contentDescription = stringResource(R.string.sources_archive_import),
+                    onClick = openSourceArchive,
+                    style = TitleActionStyle.Neutral
+                )
+                TitleAction(
                     icon = MaterialSymbols.RoundedFilled.Add,
                     contentDescription = stringResource(R.string.add),
                     onClick = state::openAddSource,
@@ -467,10 +520,33 @@ private fun SourcesPageContent(
                 blocked = blockedSources.keys,
                 withExperimentalVersions = withExperimentalVersions,
                 experimentalVersionsEnabled = experimentalVersionsEnabled,
+                autoUpdatesDisabled = autoUpdatesDisabled,
                 onUpdate = onUpdate,
                 onToggleEnabled = onToggleEnabled,
                 onSetPrerelease = ::setPrerelease,
                 onSetExperimentalVersions = ::setExperimentalVersions,
+                onSetAutoUpdate = ::setAutoUpdate,
+                onShare = { bundles -> bundlesToShare.value = bundles },
+                onExport = { bundles ->
+                    val uids = bundles.map { it.uid }.toSet()
+                    if (uids.isNotEmpty()) {
+                        pendingArchiveExportUids.value = uids
+                        saveSourceArchive("morphe-sources.${SOURCE_ARCHIVE_EXTENSION}")
+                    }
+                },
+                onSelectVersions = { bundles ->
+                    versionsToSelect = bundles
+                    bundleToSelectVersion = bundles.firstOrNull()
+                },
+                onPinCurrentVersions = { bundles ->
+                    scope.launch {
+                        bundles.forEach { bundle ->
+                            bundle.installedVersionSignature?.let { version ->
+                                patchBundleRepository.pinSourceVersion(bundle.uid, version)
+                            }
+                        }
+                    }
+                },
                 onDelete = { bundlesToDelete.value = it },
                 // Reorder maps list positions onto the full order, so a filtered list would move
                 // the wrong sources. A search is only put away, being typed again in a moment
@@ -596,6 +672,16 @@ private fun SourcesPageContent(
                                         onExperimentalVersionsToggle = if (bundle.offersExperimentalVersions(withExperimentalVersions)) {
                                             { useExperimental -> setExperimentalVersions(listOf(bundle), useExperimental) }
                                         } else null,
+                                        autoUpdateEnabled = bundle is RemotePatchBundle &&
+                                                bundle.uid.toString() !in autoUpdatesDisabled,
+                                        onAutoUpdateToggle = if (bundle is RemotePatchBundle) {
+                                            { enabled -> setAutoUpdate(listOf(bundle), enabled) }
+                                        } else null,
+                                        pinnedVersion = versionPins.firstOrNull { it.startsWith("${bundle.uid}|") }
+                                            ?.let { (bundle as? JsonPatchBundle)?.endpointBranch },
+                                        onSelectVersion = (bundle as? JsonPatchBundle)?.let { jsonBundle ->
+                                            { bundleToSelectVersion = jsonBundle }
+                                        },
                                         onDisable = { onToggleEnabled(listOf(bundle)) },
                                         onUpdate = { onUpdate(listOf(bundle)) },
                                         onRename = { onRename(bundle) },
@@ -649,6 +735,37 @@ private fun SourcesPageContent(
         )
 
         ScrollToTopButton(listState = listState, extraBottomPadding = listBottom)
+    }
+
+    // Delete confirmation dialog: one source is shown as itself, several are listed by name
+    DialogHost(target = bundlesToShare.value?.takeIf { it.isNotEmpty() }) { bundles ->
+        AppDialog(
+            onDismissRequest = { bundlesToShare.value = null },
+            title = stringResource(R.string.sources_management_share_title),
+            description = stringResource(R.string.sources_management_share_description),
+            footer = {
+                AppDialogButtonRow(
+                    primaryText = stringResource(R.string.sources_management_share_installed_versions),
+                    onPrimaryClick = {
+                        bundlesToShare.value = null
+                        scope.launch {
+                            runCatching { onCreateSourceShareUri(bundles, true) }
+                                .onSuccess(::shareText)
+                                .onFailure { messages.show(R.string.sources_management_share_failed, it.message.orEmpty()) }
+                        }
+                    },
+                    secondaryText = stringResource(R.string.sources_management_share_latest),
+                    onSecondaryClick = {
+                        bundlesToShare.value = null
+                        scope.launch {
+                            runCatching { onCreateSourceShareUri(bundles, false) }
+                                .onSuccess(::shareText)
+                                .onFailure { messages.show(R.string.sources_management_share_failed, it.message.orEmpty()) }
+                        }
+                    }
+                )
+            }
+        )
     }
 
     // Delete confirmation dialog: one source is shown as itself, several are listed by name
@@ -717,6 +834,24 @@ private fun SourcesPageContent(
             onConfirm = { url ->
                 bundleToChangeLink = null
                 scope.launch { patchBundleRepository.changeRemoteLink(bundle, url) }
+            }
+        )
+    }
+
+    DialogHost(target = bundleToSelectVersion) { bundle ->
+        SourceVersionPickerDialog(
+            source = bundle,
+            tags = availableVersionTags,
+            loading = loadingVersionTags,
+            onSelect = { tag ->
+                val remaining = versionsToSelect.dropWhile { it.uid != bundle.uid }.drop(1)
+                versionsToSelect = remaining
+                bundleToSelectVersion = remaining.firstOrNull()
+                scope.launch { patchBundleRepository.pinSourceVersion(bundle.uid, tag) }
+            },
+            onDismiss = {
+                bundleToSelectVersion = null
+                versionsToSelect = emptyList()
             }
         )
     }
@@ -857,11 +992,65 @@ private class SourceCardActions(
     val onShare: (() -> Unit)?,
     val onPrereleasesToggle: ((Boolean) -> Unit)?,
     val onExperimentalVersionsToggle: ((Boolean) -> Unit)?,
+    val autoUpdateEnabled: Boolean,
+    val onAutoUpdateToggle: ((Boolean) -> Unit)?,
+    val pinnedVersion: String?,
+    val onSelectVersion: (() -> Unit)?,
     val onDisable: () -> Unit,
     val onUpdate: () -> Unit,
     val onRename: () -> Unit,
     val onDelete: () -> Unit
 )
+
+@Composable
+private fun DialogHostScope.SourceVersionPickerDialog(
+    source: JsonPatchBundle,
+    tags: List<String>,
+    loading: Boolean,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AppDialog(
+        onDismissRequest = onDismiss,
+        title = stringResource(R.string.sources_management_select_version),
+        description = stringResource(R.string.sources_management_select_version_description),
+        footer = {
+            AppDialogButtonRow(
+                primaryText = stringResource(R.string.close),
+                onPrimaryClick = onDismiss
+            )
+        }
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 440.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(Defaults.SpaceSmall)
+        ) {
+            when {
+                loading -> CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally))
+                tags.isEmpty() -> Text(
+                    text = stringResource(R.string.sources_management_version_tags_unavailable),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                else -> tags.forEach { tag ->
+                    SettingsItem(
+                        onClick = { onSelect(tag) },
+                        title = tag,
+                        subtitle = if (source.endpointBranch == tag) {
+                            stringResource(R.string.sources_management_version_selected)
+                        } else null,
+                        icon = if (source.endpointBranch == tag) MaterialSymbols.Rounded.Lock
+                        else MaterialSymbols.Rounded.History,
+                        trailingContent = null
+                    )
+                }
+            }
+        }
+    }
+}
 
 /** Rows of the first card the tour points at. */
 private val SourceTourTargets = setOf(
@@ -1244,7 +1433,9 @@ private fun BundleManagementCard(
 
                             SettingsDivider(fullWidth = true)
 
-                            if (actions.onPrereleasesToggle != null || actions.onExperimentalVersionsToggle != null) {
+                            if (actions.onPrereleasesToggle != null || actions.onExperimentalVersionsToggle != null ||
+                                actions.onAutoUpdateToggle != null || actions.onSelectVersion != null
+                            ) {
                                 // Grouped apart from the card's spaced column, so the experimental toggle
                                 // brings its gap along as it folds in rather than the column opening it at once
                                 Column {
@@ -1273,6 +1464,40 @@ private fun BundleManagementCard(
                                                 top = if (actions.onPrereleasesToggle != null) Defaults.SpaceSmall else 0.dp
                                             ),
                                             showDivider = false
+                                        )
+                                    }
+
+                                    ListRowFold(visible = actions.onAutoUpdateToggle != null) {
+                                        ToggleRow(
+                                            title = stringResource(R.string.sources_management_auto_update),
+                                            description = stringResource(R.string.sources_management_auto_update_description),
+                                            checked = actions.autoUpdateEnabled,
+                                            onCheckedChange = { actions.onAutoUpdateToggle?.invoke(it) },
+                                            modifier = Modifier.padding(
+                                                top = if (actions.onPrereleasesToggle != null || actions.onExperimentalVersionsToggle != null) {
+                                                    Defaults.SpaceSmall
+                                                } else 0.dp
+                                            ),
+                                            showDivider = false
+                                        )
+                                    }
+
+                                    ListRowFold(visible = actions.onSelectVersion != null) {
+                                        SettingsItem(
+                                            onClick = { actions.onSelectVersion?.invoke() },
+                                            title = stringResource(R.string.sources_management_select_version),
+                                            subtitle = actions.pinnedVersion?.let {
+                                                stringResource(R.string.sources_management_version_pinned, it)
+                                            } ?: bundle.version?.let {
+                                                stringResource(R.string.sources_management_version_installed, it)
+                                            } ?: stringResource(R.string.sources_management_version_unavailable),
+                                            icon = MaterialSymbols.Rounded.History,
+                                            modifier = Modifier.padding(
+                                                top = if (actions.onPrereleasesToggle != null ||
+                                                    actions.onExperimentalVersionsToggle != null ||
+                                                    actions.onAutoUpdateToggle != null
+                                                ) Defaults.SpaceSmall else 0.dp
+                                            )
                                         )
                                     }
                                 }

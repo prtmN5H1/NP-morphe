@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -24,6 +25,7 @@ import app.morphe.manager.data.room.apps.installed.trackingKey
 import app.morphe.manager.domain.batch.BatchTarget
 import app.morphe.manager.domain.manager.*
 import app.morphe.manager.domain.repository.PatchBundleRepository
+import app.morphe.manager.domain.repository.PatchHistoryRepository
 import app.morphe.manager.ui.model.HomeAppItem
 import app.morphe.manager.ui.model.navigation.Patcher
 import app.morphe.manager.ui.screen.home.*
@@ -74,7 +76,10 @@ fun HomeScreen(
 ) {
     val context = LocalContext.current
     val messages = koinInject<UserMessages>()
+    val patchHistoryRepository = koinInject<PatchHistoryRepository>()
+    val patchHistoryEntries by patchHistoryRepository.entries.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
+    var showPatchHistory by rememberSaveable { mutableStateOf(false) }
     val sourcesLoadingText = stringResource(R.string.home_sources_are_loading)
     val manualSortHint = stringResource(R.string.home_app_sort_manual_hint)
     val otherAppsText = stringResource(R.string.home_other_apps)
@@ -84,6 +89,14 @@ fun HomeScreen(
     val pagerState = rememberPagerState(initialPage = MainPage.APPS.ordinal) { MainPage.entries.size }
     val openPage: (MainPage) -> Unit = { page ->
         scope.launch { pagerState.turnTo(page) }
+    }
+
+    DialogHost(visible = showPatchHistory) {
+        PatchHistoryDialog(
+            entries = patchHistoryEntries,
+            onDismiss = { showPatchHistory = false },
+            onClear = { scope.launch { patchHistoryRepository.clear() } }
+        )
     }
     // Turns to each step's page, and back to the apps once the tour ends
     val tourPage = onboardingState?.page
@@ -475,6 +488,7 @@ fun HomeScreen(
                                 homeViewModel.patchFlow.startOtherAppsFlow(otherAppsText)
                             }
                         },
+                        onOpenHistory = { showPatchHistory = true },
                         onOpenSources = { openPage(MainPage.SOURCES) },
                         onRefreshGreeting = onRefresh,
                         onHideMoreAppsCard = { scope.launch { prefs.showMoreAppsCard.update(false) } }

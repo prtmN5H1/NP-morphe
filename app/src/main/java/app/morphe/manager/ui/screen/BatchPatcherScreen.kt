@@ -83,6 +83,7 @@ fun BatchPatcherScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val miniGameState = remember { MiniGameState(prefs, scope) }
+    var inAppBrowserUrl by rememberSaveable { mutableStateOf<String?>(null) }
 
     LaunchedEffect(targets) {
         viewModel.ensurePlan(targets)
@@ -130,7 +131,8 @@ fun BatchPatcherScreen(
                     viewModel.markInstalled(item.id, installedPackage)
                     onAppStateChanged(installedPackage)
                 },
-                onFailed = { message -> viewModel.markInstallFailed(item.id, message) }
+                onFailed = { message -> viewModel.markInstallFailed(item.id, message) },
+                downloadManagerId = item.downloadManagerId
             )
         }.toMap()
     }
@@ -361,8 +363,24 @@ fun BatchPatcherScreen(
                         isApkBundle = metadata?.apkFileType?.isApk == false,
                         onDismiss = viewModel::cancelApkSearch,
                         onOpenApkDownloadHelper = apkDownloadHelpers.open,
+                        onOpenInAppBrowser = { inAppBrowserUrl = it },
                         onContinue = viewModel::confirmApkSearch
                     )
+
+                    DialogHost(target = inAppBrowserUrl) { url ->
+                        ApkDownloadBrowserDialog(
+                            initialUrl = url,
+                            onDismiss = { inAppBrowserUrl = null },
+                            onApkDownloaded = { uri, downloadUrl, downloadId, permanent ->
+                                inAppBrowserUrl = null
+                                viewModel.handleBrowserApkDownloaded(
+                                    uri = uri,
+                                    downloadSourceUrl = downloadUrl,
+                                    downloadManagerId = downloadId.takeUnless { permanent }
+                                )
+                            }
+                        )
+                    }
                 }
 
                 // Waits on screen while the user is in the browser, so the picker opens on their tap

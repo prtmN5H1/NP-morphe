@@ -58,6 +58,7 @@ internal fun HomeHeader(
     sortOpen: Boolean,
     onSortClick: () -> Unit,
     onPatchFileClick: () -> Unit,
+    onOpenHistory: () -> Unit,
     reorder: ListReorder? = null,
     // Set while the tour runs, which points at the button for other apps
     tour: OnboardingState? = null
@@ -115,6 +116,13 @@ internal fun HomeHeader(
                 open = sortOpen,
                 onClick = onSortClick,
                 enabled = sortEnabled
+            )
+
+            TitleAction(
+                icon = MaterialSymbols.Rounded.History,
+                contentDescription = stringResource(R.string.patch_history_title),
+                onClick = onOpenHistory,
+                style = TitleActionStyle.Neutral
             )
 
             TitleAction(

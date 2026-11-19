@@ -29,6 +29,8 @@ import app.morphe.manager.domain.manager.KeystoreManager
 import app.morphe.manager.domain.manager.PreferencesManager
 import app.morphe.manager.domain.repository.InstalledAppRepository
 import app.morphe.manager.domain.repository.OriginalApkRepository
+import app.morphe.manager.domain.repository.PatchHistoryEntry
+import app.morphe.manager.domain.repository.PatchHistoryRepository
 import app.morphe.manager.domain.repository.PatchBundleRepository
 import app.morphe.manager.domain.worker.Worker
 import app.morphe.manager.domain.worker.WorkerRepository
@@ -56,6 +58,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.util.UUID
 import kotlin.time.measureTime
 
 typealias ProgressEventHandler = (name: String?, state: State?, message: String?) -> Unit
@@ -76,6 +79,7 @@ class PatcherWorker(
     private val rootInstaller: RootInstaller,
     private val installerManager: InstallerManager,
     private val patchBundleRepository: PatchBundleRepository,
+    private val patchHistoryRepository: PatchHistoryRepository,
     private val patcherProcesses: PatcherProcesses
 ) : Worker<PatcherWorker.Args>(context, parameters) {
     private fun runtime(vm: PatcherVm) =
@@ -108,7 +112,9 @@ class PatcherWorker(
         /** Place of this app in the queue and the queue total, null for a single run. */
         val queuePosition: Pair<Int, Int>? = null,
         /** Whether the build is mounted over the stock app rather than installed. */
-        val useMount: Boolean = false
+        val useMount: Boolean = false,
+        val downloadSourceUrl: String? = null,
+        val baseFileName: String? = null
     ) {
         val packageName get() = input.packageName
     }
@@ -430,7 +436,40 @@ class PatcherWorker(
             )
 
             Log.i(tag, "Patching succeeded".logFmt())
-            val outputPackageName = pm.getPackageInfo(File(args.output))?.packageName ?: args.packageName
+            val outputPackageInfo = pm.getPackageInfo(File(args.output))
+            val outputPackageName = outputPackageInfo?.packageName ?: args.packageName
+            runCatching {
+                val basePackageInfo = pm.getPackageInfo(inputFile)
+                patchHistoryRepository.record(
+                    PatchHistoryEntry(
+                        id = UUID.randomUUID().toString(),
+                        packageName = outputPackageName,
+                        appName = KnownApps.getAppName(outputPackageName),
+                        baseVersionName = basePackageInfo?.versionName?.takeIf(String::isNotBlank) ?: args.input.version,
+                        baseVersionCode = basePackageInfo?.let(pm::getVersionCode) ?: args.input.versionCode,
+                        baseFileName = args.baseFileName?.takeIf(String::isNotBlank) ?: inputFile.name,
+                        downloadSourceUrl = args.downloadSourceUrl,
+                        patchSources = args.patchSources.map { source ->
+                            "${source.name} (${source.version ?: "unknown"})"
+                        },
+                        appliedPatches = args.selectedPatches.values.flatten().distinct().sorted(),
+                        // The patcher exposes no separate third-party dependency manifest: the
+                        // code it loads comes from each selected source's patches.jar. Record
+                        // those artifacts alongside the actual runtime in build history.
+                        libraries = buildList {
+                            add("Patcher runtime: ${vm.name}")
+                            args.patchSources.forEach { source ->
+                                add("Patch bundle: ${source.name} (${source.version ?: "unknown"})")
+                            }
+                        },
+                        managerVersion = BuildConfig.VERSION_NAME,
+                        patcherVersion = BuildConfig.PATCHER_VERSION,
+                        outputVersionName = outputPackageInfo?.versionName,
+                        outputVersionCode = outputPackageInfo?.let(pm::getVersionCode),
+                        patchCompletedAtMillis = System.currentTimeMillis(),
+                    )
+                )
+            }.onFailure { Log.w(tag, "Could not record patch history for $outputPackageName", it) }
             autoInstallPending = installerManager.autoInstallAllowed(outputPackageName, mount = args.useMount)
             succeeded = true
             Result.success()

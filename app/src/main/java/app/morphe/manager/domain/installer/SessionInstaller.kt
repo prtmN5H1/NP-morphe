@@ -38,6 +38,9 @@ private const val ACTION_UNINSTALL_STATUS = "app.morphe.manager.UNINSTALL_STATUS
 private const val EXTRA_SESSION_ID = "session_id"
 private const val EXTRA_UNINSTALL_REQUEST_ID = "uninstall_request_id"
 
+/** One APK entry in a PackageInstaller session that restores a split application. */
+data class SessionApkFile(val name: String, val file: File)
+
 /**
  * PackageInstaller-based installer.
  *
@@ -69,11 +72,20 @@ class SessionInstaller(private val app: Application) {
      * @throws SessionDeadException if the session was killed before completion.
      */
     suspend fun installInternal(apkFile: File): InstallResult {
-        requireApkPresent(apkFile)
+        return installInternal(listOf(SessionApkFile("base.apk", apkFile)))
+    }
+
+    /** Installs a base APK and its splits together in one PackageInstaller session. */
+    suspend fun installInternal(apkFiles: List<SessionApkFile>): InstallResult {
+        require(apkFiles.isNotEmpty()) { "An install session needs at least one APK" }
+        apkFiles.forEach { requireApkPresent(it.file) }
         val silentUpdate = !silentUpdatesRefused
-        Log.d(TAG, "installInternal: ${apkFile.name} (${apkFile.length()} bytes), silentUpdate=$silentUpdate")
+        Log.d(
+            TAG,
+            "installInternal: ${apkFiles.size} APK file(s), silentUpdate=$silentUpdate"
+        )
         return try {
-            awaitSession(apkFile, silentUpdate)
+            awaitSession(apkFiles, silentUpdate)
         } finally {
             // However it ended, a confirmation nobody answered must not outlive the session
             ManagerApplication.onReturnToForeground = null
@@ -81,20 +93,20 @@ class SessionInstaller(private val app: Application) {
         }
     }
 
-    private suspend fun awaitSession(apkFile: File, silentUpdate: Boolean): InstallResult {
-        if (!silentUpdate) return commitSession(apkFile, requireUserAction = true)
+    private suspend fun awaitSession(apkFiles: List<SessionApkFile>, silentUpdate: Boolean): InstallResult {
+        if (!silentUpdate) return commitSession(apkFiles, requireUserAction = true)
 
         return try {
-            commitSession(apkFile, requireUserAction = false)
+            commitSession(apkFiles, requireUserAction = false)
         } catch (e: SilentInstallRefusedException) {
             silentUpdatesRefused = true
             Log.w(TAG, "Silent update refused by the platform (${e.message}), asking the user instead")
-            commitSession(apkFile, requireUserAction = true)
+            commitSession(apkFiles, requireUserAction = true)
         }
     }
 
     @SuppressLint("RequestInstallPackagesPolicy")
-    private suspend fun commitSession(apkFile: File, requireUserAction: Boolean): InstallResult {
+    private suspend fun commitSession(apkFiles: List<SessionApkFile>, requireUserAction: Boolean): InstallResult {
         // With the dialog asked for up front, an abort can only be the user dismissing it
         var userActionShown = requireUserAction
         val installer = app.packageManager.packageInstaller
@@ -120,15 +132,17 @@ class SessionInstaller(private val app: Application) {
         }
 
         val sessionId = installer.createSession(params)
-        Log.d(TAG, "Created session $sessionId for ${apkFile.name}")
+        Log.d(TAG, "Created session $sessionId for ${apkFiles.size} APK file(s)")
 
         try {
             // The copy and fsync of a multi-hundred-megabyte archive must not run on the caller's thread
             withContext(Dispatchers.IO) {
                 installer.openSession(sessionId).use { session ->
-                    session.openWrite("base.apk", 0, apkFile.length()).use { out ->
-                        apkFile.inputStream().use { it.copyTo(out) }
-                        session.fsync(out)
+                    apkFiles.forEach { apk ->
+                        session.openWrite(apk.name, 0, apk.file.length()).use { out ->
+                            apk.file.inputStream().use { it.copyTo(out) }
+                            session.fsync(out)
+                        }
                     }
                 }
             }

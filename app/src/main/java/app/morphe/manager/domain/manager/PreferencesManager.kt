@@ -107,6 +107,23 @@ class PreferencesManager(
     /** UIDs of bundles for which experimental app versions are preferred as the recommended target. */
     val bundleExperimentalVersionsEnabled = stringSetPreference("bundle_experimental_versions_enabled", emptySet())
 
+    /** UIDs of remote bundles excluded from automatic release checks and downloads. */
+    val bundleAutoUpdatesDisabled = stringSetPreference("bundle_auto_updates_disabled", emptySet())
+
+    /** UIDs and source endpoints a release tag pin should return to when automatic updates resume. */
+    val bundleVersionPins = stringSetPreference("bundle_version_pins", emptySet())
+
+    /** Global and per-app controls for the durable patch/install history. */
+    val patchHistoryEnabled = booleanPreference("patch_history_enabled", true)
+    val patchHistoryDisabledApps = stringSetPreference("patch_history_disabled_apps", emptySet())
+
+    /** Keep one rollback APK set before overwriting an installed app. */
+    val rollbackBackupsEnabled = booleanPreference("rollback_backups_enabled", true)
+    val rollbackBackupDisabledApps = stringSetPreference("rollback_backup_disabled_apps", emptySet())
+    /** Ask whether to clear a rollback set after the user opens the newly installed app. */
+    val rollbackAutoCleanupEnabled = booleanPreference("rollback_auto_cleanup_enabled", true)
+    val rollbackAutoCleanupDisabledApps = stringSetPreference("rollback_auto_cleanup_disabled_apps", emptySet())
+
     /** Packages whose experimental version warning was confirmed, which is asked once per app. */
     val experimentalVersionsConfirmed = stringSetPreference("experimental_versions_confirmed", emptySet())
 
@@ -185,6 +202,9 @@ class PreferencesManager(
 
     /** Whether asking for an APK starts the helper flow at once, over the download instructions. */
     val openApkDownloadHelperDirectly = booleanPreference("open_apk_download_helper_directly", false)
+
+    /** Where APK search pages open; ASK leaves the choice with the user each time. */
+    val apkBrowserPreference = enumPreference("apk_browser_preference", ApkBrowserPreference.ASK)
 
     val lastFilePickerPath = stringPreference("last_file_picker_path", "")
     val filePickerSortMode = stringPreference("file_picker_sort_mode", "DATE_DESC")

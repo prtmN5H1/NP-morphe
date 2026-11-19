@@ -38,6 +38,8 @@ val repositoryModule = module {
     singleOf(::WorkerRepository)
     singleOf(::InstalledAppRepository)
     singleOf(::OriginalApkRepository)
+    singleOf(::PatchHistoryRepository)
+    singleOf(::RollbackBackupRepository)
     singleOf(::StorageStatsRepository)
     singleOf(::AppDataResolver)
 }

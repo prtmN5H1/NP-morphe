@@ -67,6 +67,7 @@ private val MIME_EXTENSION_MAP: Map<String, Set<String>> = mapOf(
     "application/json" to setOf("json"),
     "text/plain" to setOf("txt", "log"),
     "application/vnd.ms-project" to setOf("mpp"), // Morphe patch bundle format
+    "application/vnd.morphe.source-archive" to setOf("morphe"), // Morphe source archive
     "application/x-pkcs12" to setOf("p12", "pfx"),
     "application/x-java-keystore" to setOf("jks"),
     "application/vnd.morphe.keystore" to setOf("keystore", "bks"), // BKS keystores, no standard MIME

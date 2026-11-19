@@ -133,3 +133,5 @@ local.properties
 AGENT.md
 .gitignore
 to-do.txt
+# Private signing material restored by release workflows
+/app/keystore.jks

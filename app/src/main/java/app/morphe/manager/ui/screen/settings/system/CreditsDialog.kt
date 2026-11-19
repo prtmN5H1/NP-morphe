@@ -15,6 +15,8 @@ import androidx.compose.ui.res.stringResource
 import app.morphe.manager.BuildConfig
 import app.morphe.manager.R
 import app.morphe.manager.ui.screen.shared.*
+import app.morphe.manager.util.CUSTOM_DEVELOPER_NAME
+import app.morphe.manager.util.CUSTOM_SOURCE_REPO_URL
 import app.morphe.manager.util.isolateLtr
 import app.morphe.manager.util.withVersionPrefix
 import com.composables.icons.fontawesome.FontAwesome
@@ -92,6 +94,17 @@ fun DialogHostScope.CreditsDialog(onDismiss: () -> Unit) {
                 contributors = currentContributors,
                 onContributorClick = { openUrl(it.url) }
             )
+            SettingsSection(title = stringResource(R.string.custom_fork_credit), icon = FontAwesome.Brands.Github) {
+                SettingsGroup {
+                    SettingsItem(
+                        onClick = { openUrl(CUSTOM_SOURCE_REPO_URL) },
+                        icon = FontAwesome.Brands.Github,
+                        title = CUSTOM_DEVELOPER_NAME,
+                        subtitle = CUSTOM_SOURCE_REPO_URL.removePrefix("https://"),
+                        trailingContent = { ThemedIcon(icon = MaterialSymbols.Rounded.Open_in_new.autoMirrored) }
+                    )
+                }
+            }
             ContributorSection(
                 title = stringResource(R.string.credits_prior_development),
                 icon = MaterialSymbols.Rounded.History,

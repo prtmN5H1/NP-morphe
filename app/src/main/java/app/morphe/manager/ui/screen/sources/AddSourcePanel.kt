@@ -395,7 +395,8 @@ private class RemoteLinksState(
             "https://" + addSourceUrl.removePrefix("intent://").substringBefore("#Intent;")
         } else addSourceUrl
         val uri = runCatching { Uri.parse(normalizedLink) }.getOrNull() ?: return null
-        if (!uri.host.equals("morphe.software", ignoreCase = true) || uri.path != "/add-source") return null
+        val acceptedHosts = setOf("morphe.software", Uri.parse(COMMUNITY_PATCHES_URL).host)
+        if (uri.host !in acceptedHosts || uri.path != "/add-source") return null
         return uri.getQueryParameter("github")?.let { "https://github.com/$it" }
             ?: uri.getQueryParameter("gitlab")?.let { "https://gitlab.com/$it" }
     }
@@ -667,7 +668,6 @@ private fun CommunityCatalogWebView(
         modifier = modifier,
         factory = { context ->
             WebView(context).apply {
-                val catalogWebView = this
                 currentOnWebViewCreated(this)
                 overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
                 setOnTouchListener { view, event ->
@@ -685,7 +685,10 @@ private fun CommunityCatalogWebView(
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
                 settings.loadsImagesAutomatically = true
-                settings.javaScriptCanOpenWindowsAutomatically = false
+                // Let the catalogue use browser-native window.open behavior. With multiple
+                // windows disabled below, target=_blank pages stay inside this WebView instead
+                // of being dropped or sent to another app.
+                settings.javaScriptCanOpenWindowsAutomatically = true
                 settings.setSupportMultipleWindows(false)
                 settings.allowFileAccess = false
                 settings.allowContentAccess = false
@@ -700,45 +703,26 @@ private fun CommunityCatalogWebView(
                     fun isQueued(url: String): Boolean =
                         runCatching { currentIsQueued(url) }.getOrDefault(false)
 
-                    @JavascriptInterface
-                    fun addSource(url: String): Boolean {
-                        var accepted = false
-                        val latch = java.util.concurrent.CountDownLatch(1)
-                        catalogWebView.post {
-                            accepted = runCatching { currentAdd(url) }.getOrDefault(false)
-                            latch.countDown()
-                        }
-                        runCatching { latch.await(2, java.util.concurrent.TimeUnit.SECONDS) }
-                        return accepted
-                    }
-                    @JavascriptInterface
-                    fun removeSource(url: String): Boolean {
-                        var removed = false
-                        val latch = java.util.concurrent.CountDownLatch(1)
-                        catalogWebView.post {
-                            removed = runCatching { currentRemove(url) }.getOrDefault(false)
-                            latch.countDown()
-                        }
-                        runCatching { latch.await(2, java.util.concurrent.TimeUnit.SECONDS) }
-                        return removed
-                    }
                 }, "MorpheCatalog")
 
                 webViewClient = object : WebViewClient() {
                     private fun handleNavigation(url: String): Boolean {
-                        if (url.startsWith("intent://")) {
-                            val httpsUrl = "https://" + url.removePrefix("intent://").substringBefore("#Intent;")
-                            if (httpsUrl.startsWith("https://morphe.software/add-source")) {
-                                currentAdd(httpsUrl)
-                                return true
-                            }
-                        }
-                        if (url.startsWith("https://morphe.software/add-source")) {
-                            currentAdd(url)
+                        val normalizedUrl = if (url.startsWith("intent://")) {
+                            "https://" + url.removePrefix("intent://").substringBefore("#Intent;")
+                        } else url
+                        val repository = runCatching {
+                            val uri = Uri.parse(normalizedUrl)
+                            val acceptedHosts = setOf("morphe.software", Uri.parse(COMMUNITY_PATCHES_URL).host)
+                            if (uri.host !in acceptedHosts || uri.path != "/add-source") return@runCatching null
+                            uri.getQueryParameter("github")?.let { "https://github.com/$it" }
+                                ?: uri.getQueryParameter("gitlab")?.let { "https://gitlab.com/$it" }
+                        }.getOrNull()
+                        if (repository != null) {
+                            if (currentIsQueued(repository)) currentRemove(normalizedUrl)
+                            else currentAdd(normalizedUrl)
                             return true
                         }
-                        // Keep the full website navigation available inside this WebView.
-                        // Only the native add-source deep link is intercepted above.
+                        // All other links, routing and click handlers remain owned by the website.
                         return false
                     }
 
@@ -757,11 +741,18 @@ private fun CommunityCatalogWebView(
                               if (window.__morpheCatalogObserver) {
                                 try { window.__morpheCatalogObserver.disconnect(); } catch(e) {}
                               }
+                              if (!document.getElementById('morphe-catalog-status-style')) {
+                                var style = document.createElement('style');
+                                style.id = 'morphe-catalog-status-style';
+                                style.textContent = 'a[data-morphe-status="added"]::after{content:" · Added";font-size:.8em;opacity:.72}a[data-morphe-status="queued"]::after{content:" · Queued ✓";font-size:.8em;opacity:.82}';
+                                document.head.appendChild(style);
+                              }
                               function sourceUrl(href) {
                                 try {
                                   if (href.indexOf('intent://') === 0) href = 'https://' + href.substring(9).split('#Intent;')[0];
                                   var u = new URL(href, location.href);
-                                  if (u.hostname !== 'morphe.software' || !u.pathname.startsWith('/add-source')) return null;
+                                  if (u.hostname !== 'morphe.software' && u.hostname !== 'morphe-patches.software') return null;
+                                  if (u.pathname !== '/add-source') return null;
                                   var owner = u.searchParams.get('github');
                                   if (owner) return 'https://github.com/' + owner.replace(/^\/+|\/+$/g, '');
                                   owner = u.searchParams.get('gitlab');
@@ -771,23 +762,10 @@ private fun CommunityCatalogWebView(
                               }
                               var statusCache = Object.create(null);
                               var decorateQueued = false;
-                              function setLabel(a, value) {
-                                // Assigning textContent unconditionally creates a new text node. The
-                                // observer watches childList, so doing that on every pass loops forever.
-                                if (a.textContent !== value) a.textContent = value;
-                              }
                               function decorate() {
                                 document.querySelectorAll('a[href]').forEach(function(a) {
                                   var src = sourceUrl(a.href);
-                                  if (!src) {
-                                    try {
-                                      var u = new URL(a.href, location.href);
-                                      if (u.hostname === location.hostname) a.target = '_self';
-                                    } catch(e) {}
-                                    return;
-                                  }
-                                  a.target = '_self';
-                                  if (a.dataset.morpheOriginalText === undefined) a.dataset.morpheOriginalText = a.textContent;
+                                  if (!src) return;
                                   var status = statusCache[src];
                                   if (!status) {
                                     var added = false, queued = false;
@@ -796,49 +774,12 @@ private fun CommunityCatalogWebView(
                                     status = statusCache[src] = added ? 'added' : (queued ? 'queued' : 'new');
                                   }
                                   if (status === 'added') {
-                                    setLabel(a, 'Already Added');
-                                    a.style.pointerEvents = 'none';
-                                    a.style.opacity = '0.65';
-                                    a.setAttribute('aria-disabled', 'true');
                                     a.dataset.morpheStatus = 'added';
                                   } else {
                                     if (status === 'queued') {
-                                      setLabel(a, 'Queued ✓ · Tap to remove');
-                                      a.style.opacity = '0.85';
                                       a.dataset.morpheStatus = 'queued';
                                     } else {
-                                      setLabel(a, a.dataset.morpheOriginalText || 'Add');
-                                      a.style.opacity = '';
                                       delete a.dataset.morpheStatus;
-                                    }
-                                    a.style.pointerEvents = '';
-                                    a.removeAttribute('aria-disabled');
-                                    if (!a.dataset.morpheClickBound) {
-                                      a.dataset.morpheClickBound = '1';
-                                      a.addEventListener('click', function(ev) {
-                                        ev.preventDefault(); ev.stopPropagation();
-                                        var wasQueued = statusCache[src] === 'queued';
-                                        var ok = false;
-                                        try {
-                                          ok = wasQueued
-                                            ? MorpheCatalog.removeSource(a.href)
-                                            : MorpheCatalog.addSource(a.href);
-                                        } catch(e) {}
-                                        if (ok) {
-                                          statusCache[src] = wasQueued ? 'new' : 'queued';
-                                          if (wasQueued) {
-                                            setLabel(a, a.dataset.morpheOriginalText || 'Add');
-                                            a.style.opacity = '';
-                                            delete a.dataset.morpheStatus;
-                                          } else {
-                                            setLabel(a, 'Queued ✓ · Tap to remove');
-                                            a.style.opacity = '0.85';
-                                            a.dataset.morpheStatus = 'queued';
-                                          }
-                                          a.style.pointerEvents = '';
-                                          a.removeAttribute('aria-disabled');
-                                        }
-                                      }, true);
                                     }
                                   }
                                 });
@@ -872,12 +813,6 @@ private fun CommunityCatalogWebView(
                         return true
                     }
 
-                    override fun onCreateWindow(
-                        view: WebView,
-                        isDialog: Boolean,
-                        isUserGesture: Boolean,
-                        resultMsg: android.os.Message
-                    ): Boolean = false
                 }
                 loadUrl("https://morphe-patches.software/")
             }

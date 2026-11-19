@@ -6,6 +6,7 @@
 package app.morphe.manager.domain.batch
 
 import android.app.Application
+import android.app.DownloadManager
 import android.util.Log
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
@@ -61,6 +62,8 @@ class BatchPatchCoordinator(
     private val patchOptionsRepository: PatchOptionsRepository,
     private val installedAppRepository: InstalledAppRepository,
     private val originalApkRepository: OriginalApkRepository,
+    private val patchHistoryRepository: PatchHistoryRepository,
+    private val rollbackBackupRepository: RollbackBackupRepository,
     private val sourceMuteRepository: SourceMuteRepository,
     private val installerManager: InstallerManager,
     private val sessionInstaller: SessionInstaller,
@@ -214,13 +217,19 @@ class BatchPatchCoordinator(
     /** Plans [item] again, still left out of the run if the user left it out. */
     private suspend fun replan(item: BatchPatchItem): BatchPatchItem {
         val resolved = resolver.refresh(item)
-        return if (item.state == BatchItemState.EXCLUDED) resolved.excluded() else resolved
+        val carried = resolved.copy(
+            downloadSourceUrl = item.downloadSourceUrl,
+            downloadManagerId = item.downloadManagerId,
+            baseFileName = item.baseFileName
+        )
+        return if (item.state == BatchItemState.EXCLUDED) carried.excluded() else carried
     }
 
     /** Plans one queued app again with [resolve], provided it is still in [expectedState] when given. */
     private fun reresolveItem(
         itemId: String,
         expectedState: BatchItemState? = null,
+        preserveDownloadInfo: Boolean = true,
         resolve: suspend (item: BatchPatchItem) -> BatchPatchItem
     ): Job? {
         val current = _state.value ?: return null
@@ -229,7 +238,14 @@ class BatchPatchCoordinator(
         if (expectedState != null && item.state != expectedState) return null
 
         val job = scope.launch {
-            val resolved = resolve(item)
+            val resolved = resolve(item).let { candidate ->
+                if (!preserveDownloadInfo) candidate
+                else candidate.copy(
+                    downloadSourceUrl = candidate.downloadSourceUrl ?: item.downloadSourceUrl,
+                    downloadManagerId = candidate.downloadManagerId ?: item.downloadManagerId,
+                    baseFileName = candidate.baseFileName ?: item.baseFileName
+                )
+            }
             // The queue may have started meanwhile, and an item it runs must not be swapped out
             _state.update { state ->
                 if (state.phase != BatchPhase.PREFLIGHT) return@update state
@@ -241,8 +257,19 @@ class BatchPatchCoordinator(
     }
 
     /** Re-resolves a single item against a manually attached APK. */
-    fun attachApk(itemId: String, file: File) =
-        reresolveItem(itemId) { item -> resolver.reattach(item, file) }
+    fun attachApk(
+        itemId: String,
+        file: File,
+        downloadSourceUrl: String? = null,
+        downloadManagerId: Long? = null,
+        baseFileName: String? = null
+    ) = reresolveItem(itemId, preserveDownloadInfo = false) { item ->
+        resolver.reattach(item, file).copy(
+            downloadSourceUrl = downloadSourceUrl,
+            downloadManagerId = downloadManagerId,
+            baseFileName = baseFileName
+        )
+    }
 
     /** Re-resolves one item against the APK the user picked, saved original or installed app. */
     fun useSource(itemId: String, preferInstalled: Boolean) =
@@ -500,6 +527,25 @@ class BatchPatchCoordinator(
             val file = item.patchedFile?.takeIf { it.exists() } ?: continue
             val info = pm.getPackageInfo(file)
             val targetPackage = info?.packageName ?: item.packageName
+            val previousInfo = withContext(Dispatchers.IO) { pm.getPackageInfo(targetPackage) }
+            if (previousInfo != null && prefs.rollbackBackupsEnabled.get() &&
+                targetPackage !in prefs.rollbackBackupDisabledApps.get()
+            ) {
+                val backupResult = runCatching {
+                    rollbackBackupRepository.backupInstalled(previousInfo, pm.getVersionCode(previousInfo))
+                }
+                if (backupResult.isFailure) {
+                    val error = backupResult.exceptionOrNull()
+                    if (error is CancellationException) throw error
+                    Log.w(TAG, "Could not back up $targetPackage before batch install", error)
+                    markInstallResult(
+                        itemId = item.id,
+                        outcome = BatchInstallOutcome.FAILED,
+                        message = app.getString(R.string.settings_system_rollback_backup_failed)
+                    )
+                    continue
+                }
+            }
 
             val result = runCatching {
                 if (asPlayStore) {
@@ -513,6 +559,19 @@ class BatchPatchCoordinator(
             }
 
             if (result !is InstallResult.Success) continue
+
+            val installedInfo = withContext(Dispatchers.IO) { pm.getPackageInfo(targetPackage) }
+            patchHistoryRepository.markInstalled(
+                packageName = targetPackage,
+                installedVersionName = installedInfo?.versionName,
+                installedVersionCode = installedInfo?.let(pm::getVersionCode),
+                previousVersionName = previousInfo?.versionName,
+                previousVersionCode = previousInfo?.let(pm::getVersionCode)
+            )
+            item.downloadManagerId?.let { downloadId ->
+                runCatching { app.getSystemService(DownloadManager::class.java)?.remove(downloadId) }
+                    .onFailure { error -> Log.w(TAG, "Could not remove installed batch APK download", error) }
+            }
 
             val version = info?.versionName?.takeUnless { it.isBlank() } ?: item.version ?: continue
             installedAppRepository.addOrUpdate(
@@ -639,7 +698,14 @@ class BatchPatchCoordinator(
             patchSources = patchSources,
             announceCompletion = false,
             queuePosition = _state.value?.let { it.position to it.total },
-            useMount = item.useMount
+            useMount = item.useMount,
+            downloadSourceUrl = item.downloadSourceUrl,
+            baseFileName = item.baseFileName ?: when (val source = item.source) {
+                is BatchApkSource.SavedOriginal -> source.file.name
+                is BatchApkSource.UserFile -> source.file.name
+                is BatchApkSource.Installed -> File(source.apkPath).name
+                null -> null
+            }
         )
 
         val workId = workerRepository.launchExpedited<PatcherWorker, PatcherWorker.Args>(args)

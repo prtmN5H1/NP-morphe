@@ -13,6 +13,7 @@ package app.morphe.manager.ui.viewmodel
 import android.app.Application
 import android.net.Uri
 import android.os.Build
+import android.util.Base64
 import android.util.Log
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -45,7 +46,9 @@ import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromStream
+import kotlinx.serialization.json.encodeToString
 import kotlinx.serialization.json.encodeToStream
+import java.io.ByteArrayOutputStream
 import java.io.BufferedWriter
 import java.io.File
 import java.nio.file.Files
@@ -54,6 +57,9 @@ import java.nio.file.StandardCopyOption
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
 import kotlin.io.path.deleteExisting
 
 @Serializable
@@ -133,17 +139,36 @@ data class BundleSnapshot(
     val name: String,
     val displayName: String? = null,
     val source: String,
-    // Every remote source updates on its own, so this is ignored on import. Still written, as
-    // older manager versions require it to read the file
-    val autoUpdate: Boolean,
+    /** Whether automatic release checks are enabled; older snapshots default to enabled. */
+    val autoUpdate: Boolean = true,
     val enabled: Boolean = true,
     val sortOrder: Int,
     val createdAt: Long? = null,
     val updatedAt: Long? = null,
+    /** Original tracking endpoint when [source] is pinned to a GitHub release tag. */
+    val pinnedSource: String? = null,
+    /** Exact release tag represented by the pinned [source] endpoint. */
+    val pinnedVersion: String? = null,
     // Prerelease toggle. Null in backups written before per-source toggles were exported
     val prerelease: Boolean? = null,
     // Experimental versions toggle. Null in backups written before per-source toggles were exported
     val experimentalVersions: Boolean? = null
+)
+
+/** Portable source configuration archive; bundle files are stored beside this manifest. */
+@Serializable
+data class SourceArchiveFile(
+    val version: Int = 1,
+    val sources: List<BundleSnapshot>,
+    val artifacts: List<SourceArchiveArtifact> = emptyList(),
+)
+
+@Serializable
+data class SourceArchiveArtifact(
+    val source: String,
+    val path: String,
+    val versionSignature: String? = null,
+    val signingKey: String? = null,
 )
 
 @OptIn(ExperimentalSerializationApi::class)
@@ -312,6 +337,204 @@ class ImportExportViewModel(
             }
 
             messages.show(R.string.settings_system_export_manager_settings_success)
+        }
+    }
+
+    /** Exports selected remote sources and the bundle files currently installed for them. */
+    fun exportSourcesArchive(uids: Set<Int>, target: Uri) = viewModelScope.launch {
+        messages.reportingFailure(
+            R.string.sources_archive_export_failed,
+            "Failed to export sources"
+        ) {
+            withContext(Dispatchers.IO) {
+                val sources = patchBundleRepository.exportCustomBundles(uids)
+                require(sources.isNotEmpty()) { "No exportable remote sources were selected" }
+                val artifacts = patchBundleRepository.exportBundleArtifacts(uids)
+                contentResolver.openOutputStream(target, "wt")!!.use { output ->
+                    ZipOutputStream(output).use { zip ->
+                        zip.putNextEntry(ZipEntry("sources.json"))
+                        zip.write(
+                            json.encodeToString(
+                                SourceArchiveFile(
+                                    sources = sources,
+                                    artifacts = artifacts.map {
+                                        SourceArchiveArtifact(
+                                            source = it.source,
+                                            path = it.path,
+                                            versionSignature = it.versionSignature,
+                                            signingKey = it.signingKey,
+                                        )
+                                    },
+                                )
+                            ).toByteArray(Charsets.UTF_8)
+                        )
+                        zip.closeEntry()
+
+                        artifacts.forEach { artifact ->
+                            zip.putNextEntry(ZipEntry(artifact.path))
+                            artifact.file.inputStream().use { it.copyTo(zip) }
+                            zip.closeEntry()
+                        }
+                    }
+                }
+            }
+            messages.show(R.string.sources_archive_export_success)
+        }
+    }
+
+    /** Reads a Morphe source archive directly, without asking the user to extract it first. */
+    fun importSourcesArchive(source: Uri) = viewModelScope.launch {
+        var temporaryArtifacts: List<File> = emptyList()
+        messages.reportingFailure(
+            R.string.sources_archive_import_failed,
+            "Failed to import sources"
+        ) {
+            try {
+                val parsed = withContext(Dispatchers.IO) {
+                    val createdFiles = mutableListOf<File>()
+                    try {
+                        val result = contentResolver.openInputStream(source)?.use { input ->
+                            ZipInputStream(input).use { zip ->
+                                require(zip.nextEntry?.name == "sources.json") {
+                                    "Source archive must begin with sources.json"
+                                }
+                                val manifestBytes = ByteArrayOutputStream()
+                                val buffer = ByteArray(8192)
+                                var manifestSize = 0L
+                                while (true) {
+                                    val count = zip.read(buffer)
+                                    if (count < 0) break
+                                    manifestSize += count
+                                    require(manifestSize <= MAX_SOURCE_ARCHIVE_MANIFEST_BYTES) {
+                                        "Source archive manifest is too large"
+                                    }
+                                    manifestBytes.write(buffer, 0, count)
+                                }
+                                val archive = json.decodeFromString<SourceArchiveFile>(
+                                    manifestBytes.toByteArray().toString(Charsets.UTF_8)
+                                )
+                                require(archive.version == 1) { "Unsupported source archive version" }
+                                require(archive.sources.isNotEmpty()) { "Source archive contains no sources" }
+                                require(archive.sources.size <= MAX_SOURCE_ARCHIVE_SOURCES) {
+                                    "Too many sources in archive"
+                                }
+                                require(archive.artifacts.size <= archive.sources.size) {
+                                    "Too many bundle artifacts in archive"
+                                }
+                                require(archive.artifacts.map { it.path }.distinct().size == archive.artifacts.size) {
+                                    "Duplicate bundle artifact paths"
+                                }
+                                require(archive.artifacts.map { it.source.lowercase(Locale.US) }.distinct().size == archive.artifacts.size) {
+                                    "Duplicate bundle artifacts for a source"
+                                }
+                                val sourceNames = archive.sources.map { it.source.lowercase(Locale.US) }.toSet()
+                                archive.artifacts.forEach { artifact ->
+                                    require(artifact.source.lowercase(Locale.US) in sourceNames) {
+                                        "Bundle artifact does not match a source in this archive"
+                                    }
+                                    require(Regex("bundles/[A-Za-z0-9_-]+\\.jar").matches(artifact.path)) {
+                                        "Invalid bundle artifact path"
+                                    }
+                                }
+
+                                val expected = archive.artifacts.associateBy { it.path }
+                                val imported = mutableMapOf<String, PatchBundleRepository.EmbeddedBundleArtifact>()
+                                var totalPayloadBytes = 0L
+                                var entry = zip.nextEntry
+                                while (entry != null) {
+                                    val metadata = expected[entry.name]
+                                    if (metadata != null) {
+                                        val file = File.createTempFile("morphe-source-", ".jar", app.cacheDir)
+                                        createdFiles += file
+                                        var artifactSize = 0L
+                                        file.outputStream().use { output ->
+                                            while (true) {
+                                                val count = zip.read(buffer)
+                                                if (count < 0) break
+                                                artifactSize += count
+                                                totalPayloadBytes += count
+                                                require(artifactSize <= MAX_SOURCE_ARCHIVE_ARTIFACT_BYTES) {
+                                                    "Bundle artifact is too large"
+                                                }
+                                                require(totalPayloadBytes <= MAX_SOURCE_ARCHIVE_TOTAL_ARTIFACT_BYTES) {
+                                                    "Source archive artifacts are too large"
+                                                }
+                                                output.write(buffer, 0, count)
+                                            }
+                                        }
+                                        imported[metadata.source.lowercase(Locale.US)] =
+                                            PatchBundleRepository.EmbeddedBundleArtifact(
+                                                file = file,
+                                                versionSignature = metadata.versionSignature,
+                                                signingKey = metadata.signingKey,
+                                            )
+                                    } else {
+                                        while (true) {
+                                            val count = zip.read(buffer)
+                                            if (count < 0) break
+                                            totalPayloadBytes += count
+                                            require(totalPayloadBytes <= MAX_SOURCE_ARCHIVE_TOTAL_ARTIFACT_BYTES) {
+                                                "Source archive data is too large"
+                                            }
+                                        }
+                                    }
+                                    zip.closeEntry()
+                                    entry = zip.nextEntry
+                                }
+                                Triple(archive, imported, createdFiles.toList())
+                            }
+                        } ?: error("Unable to read source archive")
+                        result
+                    } catch (throwable: Throwable) {
+                        createdFiles.forEach { it.delete() }
+                        throw throwable
+                    }
+                }
+                temporaryArtifacts = parsed.third
+                patchBundleRepository.importCustomBundles(
+                    parsed.first.sources,
+                    PatchBundleRepository.ImportMode.Merge,
+                    embeddedArtifacts = parsed.second,
+                )
+                messages.show(R.string.sources_archive_import_success)
+            } finally {
+                withContext(Dispatchers.IO) { temporaryArtifacts.forEach { it.delete() } }
+            }
+        }
+    }
+
+    /** A single in-app deep link carrying several source snapshots for the Android share sheet. */
+    suspend fun createSourceShareUri(uids: Set<Int>, pinInstalledVersions: Boolean): String {
+        val sources = withContext(Dispatchers.IO) {
+            patchBundleRepository.exportSourcesForShare(uids, pinInstalledVersions)
+        }
+        require(sources.isNotEmpty()) { "No remote sources to share" }
+        val payload = Base64.encodeToString(
+            json.encodeToString(SourceArchiveFile(sources = sources)).toByteArray(Charsets.UTF_8),
+            Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING
+        )
+        require(payload.length <= MAX_SOURCE_SHARE_PAYLOAD_CHARS) {
+            "This source selection is too large for one share link. Export it as a source archive instead."
+        }
+        return "morphe://sources/import?payload=$payload"
+    }
+
+    /** Imports the encoded payload from a shared Morphe source link. */
+    fun importSourceSharePayload(payload: String) = viewModelScope.launch {
+        messages.reportingFailure(
+            R.string.sources_archive_import_failed,
+            "Failed to import shared sources"
+        ) {
+            val archive = withContext(Dispatchers.IO) {
+                require(payload.length <= MAX_SOURCE_SHARE_PAYLOAD_CHARS) { "Source share link is too large" }
+                val bytes = Base64.decode(payload, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+                json.decodeFromString<SourceArchiveFile>(bytes.toString(Charsets.UTF_8))
+            }
+            require(archive.version == 1) { "Unsupported source share version" }
+            require(archive.sources.isNotEmpty()) { "No sources in share link" }
+            require(archive.sources.size <= MAX_SOURCE_ARCHIVE_SOURCES) { "Too many sources in share link" }
+            patchBundleRepository.importCustomBundles(archive.sources, PatchBundleRepository.ImportMode.Merge)
+            messages.show(R.string.sources_archive_import_success)
         }
     }
 
@@ -714,5 +937,10 @@ class ImportExportViewModel(
 
         private val knownPasswords = arrayOf("Morphe", "s3cur3p@ssw0rd")
         private val aliases = arrayOf(KeystoreManager.DEFAULT, "alias", "Morphe Key")
+        private const val MAX_SOURCE_ARCHIVE_MANIFEST_BYTES = 4L * 1024 * 1024
+        private const val MAX_SOURCE_ARCHIVE_SOURCES = 500
+        private const val MAX_SOURCE_ARCHIVE_ARTIFACT_BYTES = 128L * 1024 * 1024
+        private const val MAX_SOURCE_ARCHIVE_TOTAL_ARTIFACT_BYTES = 256L * 1024 * 1024
+        private const val MAX_SOURCE_SHARE_PAYLOAD_CHARS = 48 * 1024
     }
 }

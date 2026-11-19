@@ -6,6 +6,7 @@
 package app.morphe.manager.ui.viewmodel
 
 import android.app.Application
+import android.app.DownloadManager
 import android.content.*
 import android.content.pm.PackageInfo
 import android.os.SystemClock
@@ -22,6 +23,8 @@ import app.morphe.manager.data.room.apps.installed.InstallType
 import app.morphe.manager.domain.installer.*
 import app.morphe.manager.domain.repository.InstalledAppRepository
 import app.morphe.manager.domain.repository.OriginalApkRepository
+import app.morphe.manager.domain.repository.PatchHistoryRepository
+import app.morphe.manager.domain.repository.RollbackBackupRepository
 import app.morphe.manager.domain.manager.AfterPatching
 import app.morphe.manager.domain.manager.PreferencesManager
 import app.morphe.manager.service.ForegroundHoldService
@@ -55,9 +58,20 @@ class InstallViewModel(
     private val prefs: PreferencesManager,
     private val appDataResolver: AppDataResolver,
     private val originalApkRepository: OriginalApkRepository,
+    private val patchHistoryRepository: PatchHistoryRepository,
+    private val rollbackBackupRepository: RollbackBackupRepository,
     private val installedAppRepository: InstalledAppRepository,
     private val applicationScope: AppCoroutineScope
 ) : ViewModel() {
+    private var pendingHistoryPackageName: String? = null
+    private var previousVersionName: String? = null
+    private var previousVersionCode: Long? = null
+    private var pendingDownloadManagerId: Long? = null
+    private var pendingRollbackVerificationPackage: String? = null
+
+    var rollbackCleanupPromptPackage by mutableStateOf<Pair<String, String>?>(null)
+        private set
+
     /**
      * Current installation state.
      */
@@ -231,7 +245,8 @@ class InstallViewModel(
         originalPackageName: String,
         onPersistApp: suspend (String, InstallType) -> Boolean,
         autoUninstallOnConflict: Boolean = false,
-        allowSignatureMismatch: Boolean = false
+        allowSignatureMismatch: Boolean = false,
+        downloadManagerId: Long? = null
     ) {
         // A second tap lands before the first one's checks report Installing
         if (installState is InstallState.Installing || installStart?.isActive == true) return
@@ -244,6 +259,7 @@ class InstallViewModel(
         pendingInstallToken = oneTimeInstallerToken ?: installerManager.getPrimaryToken()
         pendingAutoUninstallOnConflict = autoUninstallOnConflict
         pendingAllowSignatureMismatch = allowSignatureMismatch
+        pendingDownloadManagerId = downloadManagerId
 
         installStart = launchInstall(R.string.installing_ellipsis) {
             if (prefs.afterPatching.get() == AfterPatching.ASK_INSTALLER && oneTimeInstallerToken == null) {
@@ -263,6 +279,9 @@ class InstallViewModel(
                 }
 
                 val targetPackageName = packageInfo.packageName
+                pendingHistoryPackageName = targetPackageName
+                previousVersionName = existingInfo?.versionName
+                previousVersionCode = existingInfo?.let(pm::getVersionCode)
 
                 if (existingInfo != null) {
                     // Check version - can't downgrade
@@ -271,6 +290,8 @@ class InstallViewModel(
                         installState = InstallState.Conflict(targetPackageName)
                         return@launchInstall
                     }
+                    // Capture this before signature-conflict handling can uninstall the old copy.
+                    backupBeforeOverwrite(existingInfo)
                     // Check signature mismatch before launching the installer - avoids
                     // INSTALL_FAILED_UPDATE_INCOMPATIBLE from the system PackageInstaller
                     if (!allowSignatureMismatch) {
@@ -786,7 +807,8 @@ class InstallViewModel(
         inputIsTemporary: Boolean,
         packageName: String,
         onPersistApp: suspend (String, InstallType) -> Boolean,
-        waitForStockInstall: Boolean = false
+        waitForStockInstall: Boolean = false,
+        downloadManagerId: Long? = null
     ) {
         if (installState is InstallState.Installing) return
         dropHandedOffInstall()
@@ -794,6 +816,7 @@ class InstallViewModel(
         // Leaving the screen must not stop the install between writing the module and
         // recording it, or the app runs a build the record does not know
         launchInstall(R.string.mounting_ellipsis) {
+            pendingDownloadManagerId = downloadManagerId
             currentInstallType = InstallType.MOUNT
             installState = InstallState.Installing()
             var recordCreated = false
@@ -813,6 +836,10 @@ class InstallViewModel(
 
                 val packageInfo = inputs.patchedInfo
                 var stockInfo = inputs.installedInfo
+                pendingHistoryPackageName = packageInfo.packageName
+                previousVersionName = stockInfo?.versionName
+                previousVersionCode = stockInfo?.let(pm::getVersionCode)
+                if (stockInfo != null) backupBeforeOverwrite(stockInfo)
                 val label = with(pm) { packageInfo.label() }
                 val patchedVersion = packageInfo.versionName?.takeUnless { it.isBlank() } ?: "unknown"
                 // Bind mount only replaces the APK file, so matching versionName is enough;
@@ -951,14 +978,16 @@ class InstallViewModel(
     fun installSavedMount(
         outputFile: File,
         packageName: String,
-        onPersistApp: suspend (String, InstallType) -> Boolean
+        onPersistApp: suspend (String, InstallType) -> Boolean,
+        downloadManagerId: Long? = null
     ) = installMount(
         outputFile = outputFile,
         inputFile = null,
         inputIsTemporary = false,
         packageName = packageName,
         onPersistApp = onPersistApp,
-        waitForStockInstall = true
+        waitForStockInstall = true,
+        downloadManagerId = downloadManagerId
     )
 
     /**
@@ -1077,7 +1106,14 @@ class InstallViewModel(
         val autoUninstallOnConflict = pendingAutoUninstallOnConflict
         val allowSignatureMismatch = pendingAllowSignatureMismatch
 
-        install(file, originalPkg, callback, autoUninstallOnConflict, allowSignatureMismatch)
+        install(
+            outputFile = file,
+            originalPackageName = originalPkg,
+            onPersistApp = callback,
+            autoUninstallOnConflict = autoUninstallOnConflict,
+            allowSignatureMismatch = allowSignatureMismatch,
+            downloadManagerId = pendingDownloadManagerId
+        )
     }
 
     /**
@@ -1111,7 +1147,14 @@ class InstallViewModel(
         val autoUninstallOnConflict = pendingAutoUninstallOnConflict
         val allowSignatureMismatch = pendingAllowSignatureMismatch
 
-        install(file, originalPkg, callback, autoUninstallOnConflict, allowSignatureMismatch)
+        install(
+            outputFile = file,
+            originalPackageName = originalPkg,
+            onPersistApp = callback,
+            autoUninstallOnConflict = autoUninstallOnConflict,
+            allowSignatureMismatch = allowSignatureMismatch,
+            downloadManagerId = pendingDownloadManagerId
+        )
     }
 
     /**
@@ -1129,9 +1172,17 @@ class InstallViewModel(
                     val callback = pendingPersistCallback
                     if (file != null && originalPkg != null && callback != null) {
                         val autoUninstallOnConflict = pendingAutoUninstallOnConflict
+                        val allowSignatureMismatch = pendingAllowSignatureMismatch
                         pendingInstallToken?.let { oneTimeInstallerToken = it }
                         installState = InstallState.Ready
-                        install(file, originalPkg, callback, autoUninstallOnConflict)
+                        install(
+                            outputFile = file,
+                            originalPackageName = originalPkg,
+                            onPersistApp = callback,
+                            autoUninstallOnConflict = autoUninstallOnConflict,
+                            allowSignatureMismatch = allowSignatureMismatch,
+                            downloadManagerId = pendingDownloadManagerId
+                        )
                     } else {
                         Log.w(TAG, "Cannot restart install after uninstall: pending install data missing")
                         installState = InstallState.Ready
@@ -1166,7 +1217,8 @@ class InstallViewModel(
             originalPackageName = originalPkg,
             onPersistApp = callback,
             autoUninstallOnConflict = pendingAutoUninstallOnConflict,
-            allowSignatureMismatch = true
+            allowSignatureMismatch = true,
+            downloadManagerId = pendingDownloadManagerId
         )
     }
 
@@ -1252,7 +1304,90 @@ class InstallViewModel(
     }
 
     fun openApp() {
-        installedPackageName?.let { pm.launch(it) }
+        openApp(installedPackageName)
+    }
+
+    fun openApp(packageName: String?) {
+        packageName?.let { target ->
+            if (pm.canLaunch(target)) {
+                pendingRollbackVerificationPackage = target
+                pm.launch(target)
+            }
+        }
+    }
+
+    /** Called when Morphe returns to the foreground after the user opened an installed app. */
+    fun onManagerResumed() {
+        val packageName = pendingRollbackVerificationPackage ?: return
+        pendingRollbackVerificationPackage = null
+        applicationScope.launch(Dispatchers.IO) {
+            val cleanupEnabled = prefs.rollbackAutoCleanupEnabled.get() &&
+                    packageName !in prefs.rollbackAutoCleanupDisabledApps.get()
+            val hasBackup = rollbackBackupRepository.get(packageName) != null
+            if (cleanupEnabled && hasBackup) {
+                val appName = pm.getApplicationInfo(packageName)
+                    ?.loadLabel(app.packageManager)
+                    ?.toString()
+                    ?.takeIf(String::isNotBlank)
+                    ?: packageName
+                withContext(Dispatchers.Main) { rollbackCleanupPromptPackage = appName to packageName }
+            }
+        }
+    }
+
+    fun dismissRollbackCleanupPrompt() {
+        rollbackCleanupPromptPackage = null
+    }
+
+    fun clearRollbackBackup(packageName: String) {
+        rollbackCleanupPromptPackage = null
+        applicationScope.launch(Dispatchers.IO) { rollbackBackupRepository.delete(packageName) }
+    }
+
+    /** Restores the most recent pre-overwrite APK set for [packageName]. */
+    fun rollback(packageName: String) {
+        if (installState is InstallState.Installing || installStart?.isActive == true) return
+        // A rollback is not the pending patched build's install confirmation, and must not
+        // remove that build's retained base APK if its earlier install attempt failed.
+        pendingHistoryPackageName = null
+        previousVersionName = null
+        previousVersionCode = null
+        pendingDownloadManagerId = null
+        installStart = launchInstall(R.string.installer_rollback_installing) {
+            installState = InstallState.Installing()
+            try {
+                val files = rollbackBackupRepository.sessionFiles(packageName)
+                if (files.isEmpty()) throw IllegalStateException("No rollback backup is available")
+                unmountIfMounted(packageName)
+                when (val result = sessionInstaller.installInternal(files)) {
+                    InstallResult.Success -> {
+                        handleInstallSuccess(packageName)
+                        messages.show(R.string.installer_rollback_success)
+                    }
+                    is InstallResult.Conflict -> handleConflict(packageName, result.message)
+                    is InstallResult.Failure -> handleInstallError(
+                        app.getString(R.string.install_app_fail, result.message ?: "Unknown error")
+                    )
+                }
+            } catch (error: Exception) {
+                Log.e(TAG, "Could not restore previous version of $packageName", error)
+                handleInstallError(error.message ?: app.getString(R.string.installer_rollback_failed))
+                messages.show(R.string.installer_rollback_failed)
+            }
+        }
+    }
+
+    private suspend fun backupBeforeOverwrite(existingInfo: PackageInfo) {
+        val packageName = existingInfo.packageName
+        if (!prefs.rollbackBackupsEnabled.get() || packageName in prefs.rollbackBackupDisabledApps.get()) return
+        try {
+            rollbackBackupRepository.backupInstalled(existingInfo, pm.getVersionCode(existingInfo))
+        } catch (error: Exception) {
+            if (error is CancellationException) throw error
+            Log.w(TAG, "Could not back up installed version of $packageName", error)
+            messages.show(R.string.settings_system_rollback_backup_failed)
+            throw error
+        }
     }
 
     fun getPrimaryInstallerToken(): InstallerManager.Token =
@@ -1326,6 +1461,30 @@ class InstallViewModel(
         installedPackageName = packageName
         appDataResolver.invalidate(packageName)
         installState = InstallState.Installed(packageName)
+        pendingDownloadManagerId?.let { downloadId ->
+            pendingDownloadManagerId = null
+            applicationScope.launch(Dispatchers.IO) {
+                runCatching { app.getSystemService(DownloadManager::class.java)?.remove(downloadId) }
+                    .onFailure { Log.w(TAG, "Could not remove the installed base APK download", it) }
+            }
+        }
+        if (pendingHistoryPackageName == packageName) {
+            val oldVersionName = previousVersionName
+            val oldVersionCode = previousVersionCode
+            applicationScope.launch(Dispatchers.IO) {
+                val installedInfo = pm.getPackageInfo(packageName)
+                patchHistoryRepository.markInstalled(
+                    packageName = packageName,
+                    installedVersionName = installedInfo?.versionName,
+                    installedVersionCode = installedInfo?.let(pm::getVersionCode),
+                    previousVersionName = oldVersionName,
+                    previousVersionCode = oldVersionCode,
+                )
+            }
+            pendingHistoryPackageName = null
+            previousVersionName = null
+            previousVersionCode = null
+        }
     }
 
     private fun handleInstallError(message: String) {

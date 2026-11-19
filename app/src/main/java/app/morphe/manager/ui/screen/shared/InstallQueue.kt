@@ -46,7 +46,8 @@ data class InstallQueueRequest(
     val builtForMount: Boolean = false,
     val onPersistApp: suspend (String, InstallType) -> Boolean,
     val onInstalled: (installedPackageName: String) -> Unit = {},
-    val onFailed: (message: String?) -> Unit = {}
+    val onFailed: (message: String?) -> Unit = {},
+    val downloadManagerId: Long? = null
 )
 
 /**
@@ -128,13 +129,15 @@ fun rememberInstallQueue(
             installViewModel.installSavedMount(
                 outputFile = file,
                 packageName = mountPackageName,
-                onPersistApp = next.onPersistApp
+                onPersistApp = next.onPersistApp,
+                downloadManagerId = next.downloadManagerId
             )
         } else {
             installViewModel.install(
                 outputFile = file,
                 originalPackageName = next.originalPackageName,
-                onPersistApp = next.onPersistApp
+                onPersistApp = next.onPersistApp,
+                downloadManagerId = next.downloadManagerId
             )
         }
     }

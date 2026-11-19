@@ -122,6 +122,12 @@ fun Uri.copyApkInto(dir: File, prefix: String, contentResolver: ContentResolver)
 fun Uri.hasMppExtension(contentResolver: ContentResolver): Boolean =
     displayName(contentResolver)?.endsWith(".mpp", ignoreCase = true) == true
 
+/** Whether the URI names a Morphe source archive, including ordinary .zip exports. */
+fun Uri.hasSourceArchiveExtension(contentResolver: ContentResolver): Boolean =
+    displayName(contentResolver)?.let {
+        it.endsWith(".morphe", ignoreCase = true) || it.endsWith(".zip", ignoreCase = true)
+    } == true
+
 /**
  * The manifest of a .mpp patch bundle, or null when it cannot be read. Values of "na" in any case
  * count as absent.

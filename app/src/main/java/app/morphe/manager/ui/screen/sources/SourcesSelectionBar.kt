@@ -15,6 +15,7 @@ import app.morphe.manager.domain.bundles.PatchBundleSource.Extensions.hasPrerele
 import app.morphe.manager.domain.bundles.PatchBundleSource.Extensions.isDefault
 import app.morphe.manager.domain.bundles.PatchBundleSource.Extensions.usesPrerelease
 import app.morphe.manager.domain.bundles.RemotePatchBundle
+import app.morphe.manager.domain.bundles.JsonPatchBundle
 import app.morphe.manager.ui.screen.shared.*
 import com.composables.icons.materialsymbols.MaterialSymbols
 import com.composables.icons.materialsymbols.rounded.*
@@ -43,10 +44,16 @@ internal fun SourcesSelectionBar(
     blocked: Set<Int>,
     withExperimentalVersions: Set<Int>,
     experimentalVersionsEnabled: Set<String>,
+    autoUpdatesDisabled: Set<String>,
     onUpdate: (List<PatchBundleSource>) -> Unit,
     onToggleEnabled: (List<PatchBundleSource>) -> Unit,
     onSetPrerelease: (List<PatchBundleSource>, Boolean) -> Unit,
     onSetExperimentalVersions: (List<PatchBundleSource>, Boolean) -> Unit,
+    onSetAutoUpdate: (List<PatchBundleSource>, Boolean) -> Unit,
+    onShare: (List<RemotePatchBundle>) -> Unit,
+    onExport: (List<RemotePatchBundle>) -> Unit,
+    onSelectVersions: (List<JsonPatchBundle>) -> Unit,
+    onPinCurrentVersions: (List<JsonPatchBundle>) -> Unit,
     onDelete: (List<PatchBundleSource>) -> Unit,
     onStartReorder: (() -> Unit)?,
     modifier: Modifier = Modifier
@@ -58,6 +65,12 @@ internal fun SourcesSelectionBar(
     // A selection holding any source that is on switches them off, so one tap never flips the rest on
     val toDisable = switchable.filter { it.enabled }
     val deletable = selected.filterNot { it.isDefault }
+    val shareable = selected.filterIsInstance<RemotePatchBundle>().filter { it.addSourceLink != null }
+    val exportable = selected.filterIsInstance<RemotePatchBundle>().filterNot { it.isDefault }
+    val pinnable = selected.filterIsInstance<JsonPatchBundle>().filter {
+        it.installedVersionSignature != null && it.endpointBranch != null
+    }
+    val versionSelectable = selected.filterIsInstance<JsonPatchBundle>().filter { it.endpointBranch != null }
 
     val updateLabel = stringResource(R.string.update)
     val disableLabel = stringResource(R.string.disable)
@@ -66,7 +79,13 @@ internal fun SourcesSelectionBar(
     val prereleaseDisableLabel = stringResource(R.string.sources_management_prerelease_disable)
     val experimentalEnableLabel = stringResource(R.string.sources_management_experimental_versions_enable)
     val experimentalDisableLabel = stringResource(R.string.sources_management_experimental_versions_disable)
+    val autoUpdateEnableLabel = stringResource(R.string.sources_management_auto_update_enable)
+    val autoUpdateDisableLabel = stringResource(R.string.sources_management_auto_update_disable)
     val deleteLabel = stringResource(R.string.delete)
+    val shareLabel = stringResource(R.string.share)
+    val exportLabel = stringResource(R.string.sources_archive_export)
+    val pinVersionLabel = stringResource(R.string.sources_management_pin_current_versions)
+    val selectVersionsLabel = stringResource(R.string.sources_management_select_versions)
 
     // Every action but deleting and confirming pre-releases is done at once, which the
     // selection then gives way to
@@ -115,6 +134,38 @@ internal fun SourcesSelectionBar(
             )
         )
         add(
+            SelectionAction(
+                icon = MaterialSymbols.Rounded.Share,
+                label = shareLabel,
+                onClick = acting { onShare(shareable) },
+                enabled = shareable.isNotEmpty()
+            )
+        )
+        add(
+            SelectionAction(
+                icon = MaterialSymbols.Rounded.Folder_zip,
+                label = exportLabel,
+                onClick = acting { onExport(exportable) },
+                enabled = exportable.isNotEmpty()
+            )
+        )
+        add(
+            SelectionAction(
+                icon = MaterialSymbols.Rounded.History,
+                label = selectVersionsLabel,
+                onClick = acting { onSelectVersions(versionSelectable) },
+                enabled = versionSelectable.isNotEmpty()
+            )
+        )
+        add(
+            SelectionAction(
+                icon = MaterialSymbols.Rounded.Lock,
+                label = pinVersionLabel,
+                onClick = acting { onPinCurrentVersions(pinnable) },
+                enabled = pinnable.isNotEmpty()
+            )
+        )
+        add(
             if (toDisable.isNotEmpty()) {
                 SelectionAction(
                     icon = MaterialSymbols.Rounded.Block,
@@ -151,6 +202,16 @@ internal fun SourcesSelectionBar(
                 // The mark an experimental version carries wherever versions are listed
                 icon = MaterialSymbols.Rounded.Science,
                 onSet = onSetExperimentalVersions
+            )
+        }
+        if (sources.any { it is RemotePatchBundle }) {
+            addSettingSwitch(
+                applicable = selected.filterIsInstance<RemotePatchBundle>(),
+                isOn = { it.uid.toString() !in autoUpdatesDisabled },
+                enableLabel = autoUpdateEnableLabel,
+                disableLabel = autoUpdateDisableLabel,
+                icon = MaterialSymbols.Rounded.Update,
+                onSet = onSetAutoUpdate
             )
         }
         add(

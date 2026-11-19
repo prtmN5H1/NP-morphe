@@ -27,6 +27,7 @@ import java.io.File
 data class StorageStats(
     val originalApksBytes: Long,
     val patchedApksBytes: Long,
+    val rollbackBackupBytes: Long,
     val patchBundlesBytes: Long,
     val keystoreBytes: Long,
     val appDataBytes: Long,
@@ -40,13 +41,14 @@ data class StorageStats(
         get() = httpCacheBytes + installerShareBytes + patcherWorkspaceBytes + temporaryBytes
 
     val appUsedBytes: Long
-        get() = originalApksBytes + patchedApksBytes + patchBundlesBytes +
+        get() = originalApksBytes + patchedApksBytes + rollbackBackupBytes + patchBundlesBytes +
                 keystoreBytes + appDataBytes + totalCacheBytes
 
     companion object {
         val Empty = StorageStats(
             originalApksBytes = 0L,
             patchedApksBytes = 0L,
+            rollbackBackupBytes = 0L,
             patchBundlesBytes = 0L,
             keystoreBytes = 0L,
             appDataBytes = 0L,
@@ -134,6 +136,7 @@ class StorageStatsRepository(
         StorageStats(
             originalApksBytes = filesystem.originalApksDir.totalBytes(),
             patchedApksBytes = app.getDir(PATCHED_APPS_DIR, Context.MODE_PRIVATE).totalBytes(),
+            rollbackBackupBytes = File(app.noBackupFilesDir, "rollback-backups").totalBytes(),
             patchBundlesBytes = app.getDir(PATCH_BUNDLES_DIR, Context.MODE_PRIVATE).totalBytes(),
             keystoreBytes = app.getDir(SIGNING_DIR, Context.MODE_PRIVATE)
                 .resolve(KEYSTORE_FILE).length().coerceAtLeast(0),
@@ -154,7 +157,12 @@ class StorageStatsRepository(
     private fun readAppDataBytes(): Long {
         val databases = File(app.dataDir, "databases").totalBytes()
         val dataStore = File(app.filesDir, "datastore").totalBytes()
-        val noBackup = runCatching { app.noBackupFilesDir.totalBytes() }.getOrDefault(0L)
+        val noBackup = runCatching {
+            app.noBackupFilesDir.listFiles()
+                ?.filterNot { it.name == "rollback-backups" }
+                ?.sumOf { it.totalBytes() }
+                ?: 0L
+        }.getOrDefault(0L)
         return databases + dataStore + noBackup
     }
 

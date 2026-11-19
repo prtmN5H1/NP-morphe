@@ -8,6 +8,13 @@ package app.morphe.manager.domain.manager
 import app.morphe.manager.util.MORPHE_API_URL
 import java.net.URI
 
+/** Where Morphe opens an APK search page when the user continues from download instructions. */
+enum class ApkBrowserPreference {
+    ASK,
+    IN_APP,
+    EXTERNAL
+}
+
 /**
  * The site a download link leads to, which the download instructions are worded for.
  *

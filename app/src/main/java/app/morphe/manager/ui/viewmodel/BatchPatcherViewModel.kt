@@ -453,6 +453,15 @@ class BatchPatcherViewModel(
         apkSearch = null
     }
 
+    /** Hands an in-app browser download directly to the queued app's normal APK validation flow. */
+    fun handleBrowserApkDownloaded(uri: Uri, downloadSourceUrl: String, downloadManagerId: Long?) {
+        val item = apkSearch?.item ?: return
+        apkSearch = null
+        attachPrompt = null
+        requestAttach(item.id)
+        onApkPicked(uri, downloadSourceUrl, downloadManagerId)
+    }
+
     /** App waiting for its downloaded file, null when nothing was sent to the browser. */
     var attachPrompt: BatchPatchItem? by mutableStateOf(null)
         private set
@@ -673,19 +682,35 @@ class BatchPatcherViewModel(
      * Copies the picked APK into the manager's private storage before handing it to the
      * resolver, because the content URI is not readable once the picker session ends.
      */
-    fun onApkPicked(uri: Uri?) {
+    fun onApkPicked(
+        uri: Uri?,
+        downloadSourceUrl: String? = null,
+        downloadManagerId: Long? = null
+    ) {
         val itemId = attachTarget
         attachTarget = null
         if (uri == null || itemId == null) return
 
         viewModelScope.launch {
             whileProcessingApk {
+                val baseFileName = withContext(Dispatchers.IO) {
+                    uri.displayName(app.contentResolver)
+                }
                 val file = withContext(Dispatchers.IO) { copyToWorkspace(uri) }
                 if (file == null) {
                     messages.show(R.string.home_invalid_apk_io_error)
                     return@whileProcessingApk
                 }
-                settleGivenApk(itemId, coordinator.attachApk(itemId, file))
+                settleGivenApk(
+                    itemId,
+                    coordinator.attachApk(
+                        itemId = itemId,
+                        file = file,
+                        downloadSourceUrl = downloadSourceUrl,
+                        downloadManagerId = downloadManagerId,
+                        baseFileName = baseFileName
+                    )
+                )
             }
         }
     }

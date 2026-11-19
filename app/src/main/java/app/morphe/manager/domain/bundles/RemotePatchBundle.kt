@@ -369,6 +369,9 @@ class JsonPatchBundle(
      */
     val endpointBranch: String? get() = extractBranch(endpoint)
 
+    /** Source endpoint pinned to a GitHub/GitLab ref, or unchanged when the URL has no branch. */
+    fun endpointForRef(ref: String): String = switchBranchInUrl(endpoint, ref)
+
     /**
      * Returns [url] with its branch segment replaced by [targetBranch].
      *

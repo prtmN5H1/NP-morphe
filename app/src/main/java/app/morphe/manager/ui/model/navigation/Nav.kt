@@ -73,6 +73,9 @@ data object Patcher : ComplexParameter<Patcher.ViewModelParams> {
         val sourceScope: Set<Int>,
         val targetPackageName: String? = null,
         val allowIncompatible: Boolean = false,
-        val useMount: Boolean = false
+        val useMount: Boolean = false,
+        val downloadSourceUrl: String? = null,
+        val downloadManagerId: Long? = null,
+        val baseFileName: String? = null
     ) : Parcelable
 }

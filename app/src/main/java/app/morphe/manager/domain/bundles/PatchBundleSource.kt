@@ -149,6 +149,15 @@ sealed class PatchBundleSource(
         }
     }
 
+    /** Installs a bundle copied from a Morphe source archive through the same validation path. */
+    internal suspend fun installArchivedBundle(file: File, publishedKey: String?) {
+        installPatchBundle("Importing archived patch bundle", publishedKey) { staging ->
+            file.inputStream().use { input ->
+                staging.outputStream().use { output -> input.copyTo(output) }
+            }
+        }
+    }
+
     protected fun requireNonEmptyBundleFile(file: File, context: String) {
         val length = runCatching { file.length() }.getOrDefault(0L)
         if (length < MIN_PATCH_BUNDLE_BYTES) {

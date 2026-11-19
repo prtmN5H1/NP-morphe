@@ -15,7 +15,9 @@ import kotlin.time.Duration.Companion.minutes
 const val tag = "Morphe Manager"
 
 const val SOURCE_NAME = "Morphe Patches"
-const val MANAGER_REPO_URL = "https://github.com/MorpheApp/morphe-manager"
+const val CUSTOM_DEVELOPER_NAME = "prtmN5H1 (NP-morphe)"
+const val CUSTOM_SOURCE_REPO_URL = "https://github.com/prtmN5H1/NP-morphe"
+const val MANAGER_REPO_URL = CUSTOM_SOURCE_REPO_URL
 const val SOURCE_REPO_URL = "https://github.com/MorpheApp/morphe-patches"
 
 /** Key the releases of [SOURCE_REPO_URL] are signed with, see PatchBundleSignature. */
@@ -34,14 +36,14 @@ const val ADD_SOURCE_PATH = "/add-source"
 /** What a source link looks like, shown in a field waiting for one. */
 const val REMOTE_URL_PLACEHOLDER = "github.com/owner/repo"
 
-/** Raw GitHub URL for the stable manager release JSON (main branch) */
-const val MANAGER_RELEASE_JSON_URL = "https://raw.githubusercontent.com/MorpheApp/morphe-manager/refs/heads/main/app-release.json"
+/** Raw GitHub URL for the stable manager release JSON (main branch). */
+const val MANAGER_RELEASE_JSON_URL = "https://raw.githubusercontent.com/prtmN5H1/NP-morphe/refs/heads/main/app-release.json"
 
-/** Raw GitHub URL for the pre-release manager release JSON (dev branch) */
-const val MANAGER_PRERELEASE_JSON_URL = "https://raw.githubusercontent.com/MorpheApp/morphe-manager/refs/heads/dev/app-release.json"
+/** Raw GitHub URL for prereleases, if the fork publishes a dedicated dev branch. */
+const val MANAGER_PRERELEASE_JSON_URL = "https://raw.githubusercontent.com/prtmN5H1/NP-morphe/refs/heads/dev/app-release.json"
 
-/** Controls whether manager updates are fetched directly from JSON files in the repository instead of using the GitHub API */
-const val USE_MANAGER_DIRECT_JSON = true
+/** Fetch manager releases from the configured fork's Releases API, including its prereleases. */
+const val USE_MANAGER_DIRECT_JSON = false
 
 /** Controls whether patches are fetched directly from JSON files in the repository instead of using the Morphe API */
 const val USE_PATCHES_DIRECT_JSON = true
@@ -161,6 +163,8 @@ const val JSON_MIMETYPE     = "application/json"
 const val BIN_MIMETYPE      = "application/octet-stream"
 const val TEXT_MIMETYPE     = "text/plain"
 const val MPP_MIMETYPE      = "application/vnd.ms-project"
+const val SOURCE_ARCHIVE_MIMETYPE = "application/vnd.morphe.source-archive"
+const val SOURCE_ARCHIVE_EXTENSION = "morphe"
 const val IMAGE_MIMETYPE    = "image/*"
 const val WILDCARD_MIMETYPE = "*/*"
 

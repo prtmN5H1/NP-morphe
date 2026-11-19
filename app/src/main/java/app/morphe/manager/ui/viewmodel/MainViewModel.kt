@@ -57,6 +57,12 @@ class MainViewModel(
      */
     var pendingMppUri: Uri? by mutableStateOf(null)
 
+    /** Source archives opened from a file manager or shared from another app. */
+    var pendingSourceArchiveUris: List<Uri>? by mutableStateOf(null)
+
+    /** Encoded source list opened from a combined Morphe share link. */
+    var pendingSourceSharePayload: String? by mutableStateOf(null)
+
     /**
      * Set by [app.morphe.manager.MainActivity.handleDeepLinkIntent] when an APK-family file
      * is shared to Morphe via the system share sheet.

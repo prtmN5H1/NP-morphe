@@ -14,6 +14,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import app.morphe.manager.BuildConfig
 import app.morphe.manager.R
+import app.morphe.manager.domain.manager.PreferencesManager
+import app.morphe.manager.domain.repository.PatchHistoryRepository
 import app.morphe.manager.ui.screen.home.ManagerChangelogDialog
 import app.morphe.manager.ui.screen.settings.SettingsSubpage
 import app.morphe.manager.ui.screen.settings.SubpageItem
@@ -25,6 +27,8 @@ import app.morphe.manager.util.rememberDocumentSaver
 import com.composables.icons.materialsymbols.MaterialSymbols
 import com.composables.icons.materialsymbols.rounded.*
 import org.koin.androidx.compose.koinViewModel
+import org.koin.compose.koinInject
+import kotlinx.coroutines.launch
 
 /**
  * The manager itself, closing the settings page as a section of its own: its version, which opens
@@ -80,6 +84,11 @@ fun AboutSettings(
 ) {
     var showChangelogDialog by remember { mutableStateOf(false) }
     var showCreditsDialog by rememberSaveable { mutableStateOf(false) }
+    var showClearPatchHistory by rememberSaveable { mutableStateOf(false) }
+    val prefs = koinInject<PreferencesManager>()
+    val patchHistoryRepository = koinInject<PatchHistoryRepository>()
+    val patchHistoryEnabled by prefs.patchHistoryEnabled.getAsState()
+    val scope = rememberCoroutineScope()
 
     val exportDebugLogs = rememberDocumentSaver(TEXT_MIMETYPE, importExportViewModel::exportDebugLogs)
 
@@ -89,6 +98,20 @@ fun AboutSettings(
 
     DialogHost(visible = showCreditsDialog) {
         CreditsDialog(onDismiss = { showCreditsDialog = false })
+    }
+
+    DialogHost(visible = showClearPatchHistory) {
+        ConfirmDialog(
+            title = stringResource(R.string.patch_history_clear_all),
+            message = stringResource(R.string.patch_history_clear_confirm),
+            primaryText = stringResource(R.string.clear),
+            isPrimaryDestructive = true,
+            onConfirm = {
+                showClearPatchHistory = false
+                scope.launch { patchHistoryRepository.clear() }
+            },
+            onDismiss = { showClearPatchHistory = false }
+        )
     }
 
     SettingsColumn {
@@ -140,6 +163,28 @@ fun AboutSettings(
                         onClick = onStartTour
                     )
                 }
+            }
+        }
+
+        SettingsSection(
+            title = stringResource(R.string.patch_history_title),
+            icon = MaterialSymbols.Rounded.History
+        ) {
+            SettingsGroup {
+                ToggleRow(
+                    title = stringResource(R.string.patch_history_enabled),
+                    description = stringResource(R.string.patch_history_enabled_description),
+                    checked = patchHistoryEnabled,
+                    onCheckedChange = { enabled -> scope.launch { prefs.patchHistoryEnabled.update(enabled) } },
+                    showDivider = false
+                )
+                SettingsDivider(fullWidth = true)
+                SettingsItem(
+                    icon = MaterialSymbols.Rounded.Delete,
+                    title = stringResource(R.string.patch_history_clear_all),
+                    subtitle = stringResource(R.string.patch_history_clear_confirm),
+                    onClick = { showClearPatchHistory = true }
+                )
             }
         }
     }

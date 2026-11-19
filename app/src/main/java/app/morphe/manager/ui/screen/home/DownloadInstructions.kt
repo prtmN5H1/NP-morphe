@@ -22,6 +22,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.surfaceColorAtElevation
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -34,7 +35,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.morphe.manager.R
+import app.morphe.manager.domain.manager.ApkBrowserPreference
 import app.morphe.manager.domain.manager.ApkDownloadSource
+import app.morphe.manager.domain.manager.PreferencesManager
 import app.morphe.manager.ui.screen.shared.*
 import app.morphe.manager.ui.theme.isDarkTheme
 import app.morphe.manager.util.*
@@ -42,6 +45,7 @@ import com.composables.icons.materialsymbols.MaterialSymbols
 import com.composables.icons.materialsymbols.rounded.*
 import com.composables.icons.materialsymbols.roundedfilled.*
 import org.koin.compose.koinInject
+import kotlinx.coroutines.launch
 
 /** Where the continue button leads, worded generically while the destination is still unknown. */
 @Composable
@@ -231,11 +235,23 @@ internal fun DialogHostScope.DownloadInstructionsDialog(
     onDismiss: () -> Unit,
     onOpenApkDownloadHelper: (() -> Unit)? = null,
     onTrustApkDownloadHelpers: (() -> Unit)? = null,
+    onOpenInAppBrowser: (String) -> Unit,
     onContinue: (handOff: (String) -> Boolean) -> Unit
 ) {
     val uriHandler = LocalUriHandler.current
+    val prefs = koinInject<PreferencesManager>()
+    val browserPreference by prefs.apkBrowserPreference.getAsState()
+    val scope = rememberCoroutineScope()
+    var browserChoiceUrl by rememberSaveable { mutableStateOf<String?>(null) }
     val copyToClipboard = rememberCopyToClipboard(stringResource(R.string.home_download_instructions_link_copied))
-    val openLink = { onContinue { url -> runCatching { uriHandler.openUri(url) }.isSuccess } }
+    val openExternal = { onContinue { url -> runCatching { uriHandler.openUri(url) }.isSuccess } }
+    fun continueTo(url: String) {
+        when (browserPreference) {
+            ApkBrowserPreference.IN_APP -> onOpenInAppBrowser(url)
+            ApkBrowserPreference.EXTERNAL -> openExternal()
+            ApkBrowserPreference.ASK -> browserChoiceUrl = url
+        }
+    }
     // A copied link is opened in another browser or a download manager, and the file it fetches
     // comes back through the same picker an opened one leads to
     val copyLink = { onContinue { url -> copyToClipboard(url); true } }
@@ -269,7 +285,7 @@ internal fun DialogHostScope.DownloadInstructionsDialog(
                 actions = listOfNotNull(
                     DialogAction(
                         text = continueText,
-                        onClick = openLink,
+                        onClick = { downloadUrl?.let(::continueTo) },
                         icon = MaterialSymbols.Rounded.Open_in_new.autoMirrored,
                         enabled = !resolving
                     ),
@@ -379,6 +395,47 @@ internal fun DialogHostScope.DownloadInstructionsDialog(
                     )
                 )
             }
+        }
+    }
+
+    DialogHost(target = browserChoiceUrl) { url ->
+        var rememberChoice by rememberSaveable(url) { mutableStateOf(false) }
+        fun choose(preference: ApkBrowserPreference) {
+            browserChoiceUrl = null
+            scope.launch {
+                if (rememberChoice) prefs.apkBrowserPreference.update(preference)
+            }
+            if (preference == ApkBrowserPreference.IN_APP) onOpenInAppBrowser(url)
+            else openExternal()
+        }
+
+        AppDialog(
+            onDismissRequest = { browserChoiceUrl = null },
+            title = stringResource(R.string.home_apk_browser_choose_title),
+            description = stringResource(R.string.home_apk_browser_choose_description),
+            footer = {
+                AppDialogActions(
+                    actions = listOf(
+                        DialogAction(
+                            text = stringResource(R.string.home_apk_browser_in_app),
+                            onClick = { choose(ApkBrowserPreference.IN_APP) },
+                            icon = MaterialSymbols.Rounded.Language
+                        ),
+                        DialogAction(
+                            text = stringResource(R.string.home_apk_browser_external),
+                            onClick = { choose(ApkBrowserPreference.EXTERNAL) },
+                            icon = MaterialSymbols.Rounded.Open_in_new.autoMirrored,
+                            emphasis = DialogActionEmphasis.Outlined
+                        )
+                    )
+                )
+            }
+        ) {
+            SettingsSwitchItem(
+                checked = rememberChoice,
+                onToggle = { rememberChoice = !rememberChoice },
+                title = stringResource(R.string.home_apk_browser_remember_choice)
+            )
         }
     }
 }

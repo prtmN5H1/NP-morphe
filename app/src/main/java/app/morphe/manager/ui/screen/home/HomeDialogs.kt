@@ -228,6 +228,7 @@ private fun DialogHostScope.PatchFlowDialog(
     apkDownloadHelpers: ApkDownloadHelperOffer,
     onTrustApkDownloadHelpers: () -> Unit
 ) {
+    var inAppBrowserUrl by rememberSaveable { mutableStateOf<String?>(null) }
     // Held so a dialog leaves as it stood, color included, as the run is let go of while it closes
     val session = held(flow.session)
     val dismiss = flow::dismiss
@@ -294,8 +295,24 @@ private fun DialogHostScope.PatchFlowDialog(
                 onDismiss = flow::backFromApkSource,
                 onOpenApkDownloadHelper = apkDownloadHelpers.open,
                 onTrustApkDownloadHelpers = onTrustApkDownloadHelpers.takeIf { apkDownloadHelpers.hasUntrusted },
+                onOpenInAppBrowser = { inAppBrowserUrl = it },
                 onContinue = flow::handleDownloadInstructionsContinue
             )
+
+            DialogHost(target = inAppBrowserUrl) { url ->
+                ApkDownloadBrowserDialog(
+                    initialUrl = url,
+                    onDismiss = { inAppBrowserUrl = null },
+                    onApkDownloaded = { uri, downloadUrl, downloadId, permanent ->
+                        inAppBrowserUrl = null
+                        flow.handleBrowserApkDownloaded(
+                            uri = uri,
+                            downloadUrl = downloadUrl,
+                            downloadManagerId = downloadId.takeUnless { permanent },
+                        )
+                    }
+                )
+            }
         }
 
         // Dialog 3: File picker prompt
