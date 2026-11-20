@@ -139,6 +139,13 @@ fun SourcesPage(
         onboardingState = onboardingState,
         alertsHeight = alertsHeight,
         onHeaderHeightChange = onHeaderHeightChange,
+        onImportArchive = openSourceArchive,
+        onExportArchive = { uids ->
+            if (uids.isNotEmpty()) {
+                pendingArchiveExportUids.value = uids
+                saveSourceArchive("morphe-sources.${SOURCE_ARCHIVE_EXTENSION}")
+            }
+        },
         addSourcePanel = {
             AddSourcePanel(
                 visible = state.isAddingSource,
@@ -193,6 +200,8 @@ private fun SourcesPageContent(
     onboardingState: OnboardingState?,
     alertsHeight: () -> Dp,
     onHeaderHeightChange: (Dp) -> Unit,
+    onImportArchive: () -> Unit,
+    onExportArchive: (Set<Int>) -> Unit,
     addSourcePanel: @Composable () -> Unit,
     onDelete: (List<PatchBundleSource>) -> Unit,
     onCreateSourceShareUri: suspend (List<RemotePatchBundle>, Boolean) -> String,
@@ -492,7 +501,7 @@ private fun SourcesPageContent(
                 TitleAction(
                     icon = MaterialSymbols.Rounded.Upload_file,
                     contentDescription = stringResource(R.string.sources_archive_import),
-                    onClick = openSourceArchive,
+                    onClick = onImportArchive,
                     style = TitleActionStyle.Neutral
                 )
                 TitleAction(
@@ -527,13 +536,7 @@ private fun SourcesPageContent(
                 onSetExperimentalVersions = ::setExperimentalVersions,
                 onSetAutoUpdate = ::setAutoUpdate,
                 onShare = { bundles -> bundlesToShare.value = bundles },
-                onExport = { bundles ->
-                    val uids = bundles.map { it.uid }.toSet()
-                    if (uids.isNotEmpty()) {
-                        pendingArchiveExportUids.value = uids
-                        saveSourceArchive("morphe-sources.${SOURCE_ARCHIVE_EXTENSION}")
-                    }
-                },
+                onExport = { bundles -> onExportArchive(bundles.mapTo(mutableSetOf()) { it.uid }) },
                 onSelectVersions = { bundles ->
                     versionsToSelect = bundles
                     bundleToSelectVersion = bundles.firstOrNull()

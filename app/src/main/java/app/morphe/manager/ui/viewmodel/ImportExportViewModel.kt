@@ -46,7 +46,7 @@ import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromStream
-import kotlinx.serialization.json.encodeToString
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.encodeToStream
 import java.io.ByteArrayOutputStream
 import java.io.BufferedWriter

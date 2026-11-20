@@ -19,6 +19,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import app.morphe.manager.R
 import app.morphe.manager.domain.repository.PatchHistoryEntry
+import app.morphe.manager.ui.screen.shared.DialogHostScope
 import app.morphe.manager.ui.screen.shared.AppDialog
 import app.morphe.manager.ui.screen.shared.AppDialogButtonRow
 import app.morphe.manager.ui.screen.shared.Defaults
@@ -28,7 +29,7 @@ import java.util.Date
 import java.util.Locale
 
 @Composable
-internal fun PatchHistoryDialog(
+internal fun DialogHostScope.PatchHistoryDialog(
     entries: List<PatchHistoryEntry>,
     onDismiss: () -> Unit,
     onClear: () -> Unit,

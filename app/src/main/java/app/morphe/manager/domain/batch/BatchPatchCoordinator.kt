@@ -306,7 +306,11 @@ class BatchPatchCoordinator(
      * app would be patched with nothing but the universal patches.
      */
     fun forceVersion(itemId: String) =
-        reresolveItem(itemId, BatchItemState.VERSION_MISMATCH, resolver::forceVersion)
+        reresolveItem(
+            itemId = itemId,
+            expectedState = BatchItemState.VERSION_MISMATCH,
+            resolve = resolver::forceVersion
+        )
 
     /**
      * Accepts an APK the bundles do not vouch for, mirroring the single-app warning dialog.
@@ -315,7 +319,11 @@ class BatchPatchCoordinator(
      * run needs was left unresolved while the file was in question.
      */
     fun acceptUnverifiedSignature(itemId: String) =
-        reresolveItem(itemId, BatchItemState.UNVERIFIED_SIGNATURE, resolver::acceptUnverifiedSignature)
+        reresolveItem(
+            itemId = itemId,
+            expectedState = BatchItemState.UNVERIFIED_SIGNATURE,
+            resolve = resolver::acceptUnverifiedSignature
+        )
 
     /**
      * Replaces what one queued app will be patched with, after the user edited it on the
