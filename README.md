@@ -19,13 +19,15 @@
 # 💊 Morphe
 
 
-1. **Install 
+1. Install 
 
-   - NP Morphe** from https://github.com/prtmN5H1/NP-morphe.
+   - NP Morphe - https://github.com/prtmN5H1/NP-morphe.
+     
+        OR
 
-   - Morphe** from [morphe.software](https://morphe.software).
+   - Morphe - [morphe.software](https://morphe.software).
 
-
+##
 2. **Pick an app** - YouTube, YouTube Music, or Reddit are supported out of the box.
 3. **Choose your mode:**
     - **Simple mode** - designed for a one-tap experience. Just tap Patch and Morphe handles the rest with sensible defaults. No configuration needed.
@@ -34,7 +36,7 @@
 5. **Install and enjoy** - once patching is complete, install the result like any normal APK.
 
 Everything happens locally. Morphe never uploads your APKs or personal data anywhere.
-
+##
 
 **Patch sources**
 - Add any compatible patch bundle via GitHub URL or deep link
