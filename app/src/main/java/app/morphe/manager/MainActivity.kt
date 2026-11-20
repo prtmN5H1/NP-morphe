@@ -22,6 +22,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.AnimatedContentScope
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
@@ -37,6 +38,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavController
+import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -51,6 +53,7 @@ import app.morphe.manager.ui.model.navigation.*
 import app.morphe.manager.ui.screen.BatchPatcherScreen
 import app.morphe.manager.ui.screen.HomeScreen
 import app.morphe.manager.ui.screen.PatcherScreen
+import app.morphe.manager.ui.screen.games.MiniGamesPage
 import app.morphe.manager.ui.screen.home.*
 import app.morphe.manager.ui.screen.settings.SettingsNavigation
 import app.morphe.manager.ui.screen.settings.SettingsSubpage
@@ -64,6 +67,7 @@ import app.morphe.manager.ui.screen.shared.BackgroundType
 import app.morphe.manager.ui.screen.shared.DialogHost
 import app.morphe.manager.ui.screen.shared.MainPage
 import app.morphe.manager.ui.screen.shared.MessageHost
+import app.morphe.manager.ui.screen.shared.ModalLayer
 import app.morphe.manager.ui.screen.shared.RandomBackground
 import app.morphe.manager.ui.screen.shared.UserMessages
 import app.morphe.manager.ui.screen.shared.rememberRandomBackground
@@ -182,7 +186,10 @@ class MainActivity : ComponentActivity() {
                 appCardColorValues = appCardColorValues
             ) {
                 MessageHost(modifier = Modifier.fillMaxSize()) {
-                    MorpheManager(vm)
+                    // Dialogs raised over whichever screen is open, such as an update's changelog
+                    ModalLayer {
+                        MorpheManager(vm)
+                    }
                 }
             }
         }
@@ -204,7 +211,7 @@ class MainActivity : ComponentActivity() {
         val shortcutId = intent?.getStringExtra(EXTRA_SHORTCUT_ID) ?: return
         intent.removeExtra(EXTRA_SHORTCUT_ID)
         runCatching { ShortcutManagerCompat.reportShortcutUsed(this, shortcutId) }
-            .onFailure { Log.w(tag, "Failed to report shortcut usage", it) }
+            .onFailure { Log.w(LOG_TAG, "Failed to report shortcut usage", it) }
     }
 
     /**
@@ -280,9 +287,8 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        // Handle APK-family file shared via system share sheet (.apk/.apks/.xapk/.apkm).
-        // The name is not checked: senders often drop or change the extension, and the file is
-        // read for what it is anyway, with a message when it turns out not to be an APK
+        // Files passed through Android shares are classified by contents in HomeViewModel, except
+        // source archives, which are opened by the archive importer.
         if (intent?.action == Intent.ACTION_SEND || intent?.action == Intent.ACTION_SEND_MULTIPLE) {
             val extraStreams = if (intent.action == Intent.ACTION_SEND_MULTIPLE) {
                 @Suppress("DEPRECATION")
@@ -306,13 +312,20 @@ class MainActivity : ComponentActivity() {
                     uri.hasSourceArchiveExtension(contentResolver)
             }
             if (archiveUris.isNotEmpty()) vm.pendingSourceArchiveUris = archiveUris
-            else if (streams.singleOrNull() != null) vm.pendingExternalApkUri = streams.single()
             else if (intent.action == Intent.ACTION_SEND) {
                 val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)?.trim().orEmpty()
                 val sharedUri = runCatching { Uri.parse(sharedText) }.getOrNull()
                 if (sharedUri?.scheme == "morphe" && sharedUri.host == "sources" && sharedUri.path == "/import") {
                     vm.pendingSourceSharePayload = sharedUri.getQueryParameter("payload")
                         ?.takeIf { it.isNotBlank() }
+                } else {
+                    streams.singleOrNull()?.let {
+                        vm.pendingIncomingFile = MainViewModel.IncomingFile(it, shared = true)
+                    }
+                }
+            } else {
+                streams.singleOrNull()?.let {
+                    vm.pendingIncomingFile = MainViewModel.IncomingFile(it, shared = true)
                 }
             }
             return
@@ -327,29 +340,28 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        // Handle .mpp file open from file manager
         if (intent.action == Intent.ACTION_VIEW && data.scheme in listOf("file", "content")) {
-            if (data.hasMppExtension(contentResolver)) {
-                vm.pendingMppUri = data
-            } else if (intent.type == SOURCE_ARCHIVE_MIMETYPE ||
+            if (intent.type == SOURCE_ARCHIVE_MIMETYPE ||
                 intent.type in listOf("application/zip", "application/x-zip-compressed") ||
                 data.hasSourceArchiveExtension(contentResolver)) {
                 vm.pendingSourceArchiveUris = listOf(data)
+            } else {
+                vm.pendingIncomingFile = MainViewModel.IncomingFile(data, shared = false)
             }
-            // Not .mpp - don't process further regardless
             return
         }
 
         val isAddSource = data.scheme == "https" &&
-                data.host == "morphe.software" &&
+                data.host == MORPHE_WEBSITE_HOST &&
                 data.path?.startsWith(ADD_SOURCE_PATH) == true
         if (!isAddSource) return
 
         fun param(key: String) = data.getQueryParameter(key)?.takeIf { it.isNotBlank() }
 
-        val url = param("github")?.let { "https://github.com/$it" }
-            ?: param("gitlab")?.let { "https://gitlab.com/$it" }
-            ?: return
+        // The website names the host by the same key the manager builds these links with
+        val url = CodeHost.entries.firstNotNullOfOrNull { host ->
+            param(host.key)?.let { "https://${host.host}/$it" }
+        } ?: return
         vm.pendingDeepLinkSource = MainViewModel.DeepLinkSource(
             url = url,
             name = param("name"),
@@ -359,7 +371,7 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         /** Action other apps use to queue a batch patch run. */
-        const val ACTION_BATCH_PATCH = "app.morphe.manager.action.BATCH_PATCH"
+        const val ACTION_BATCH_PATCH = "${BuildConfig.APPLICATION_ID}.action.BATCH_PATCH"
 
         /** Package names to patch, either a string array or a comma-separated string. */
         const val EXTRA_BATCH_PACKAGES = "packages"
@@ -368,22 +380,22 @@ class MainActivity : ComponentActivity() {
         const val EXTRA_SHORTCUT_ID = "shortcut_id"
 
         /** Action behind the update check shortcut. Shortcut intents must carry one. */
-        const val ACTION_CHECK_UPDATES = "app.morphe.manager.action.CHECK_UPDATES"
+        const val ACTION_CHECK_UPDATES = "${BuildConfig.APPLICATION_ID}.action.CHECK_UPDATES"
 
         /** Action that reopens the batch queue from an automatic re-patch notification. */
-        const val ACTION_SHOW_BATCH_RESULT = "app.morphe.manager.action.SHOW_BATCH_RESULT"
+        const val ACTION_SHOW_BATCH_RESULT = "${BuildConfig.APPLICATION_ID}.action.SHOW_BATCH_RESULT"
 
         /** Action behind the changelog button of an update notification. */
-        const val ACTION_SHOW_BUNDLE_CHANGELOG = "app.morphe.manager.action.SHOW_BUNDLE_CHANGELOG"
+        const val ACTION_SHOW_BUNDLE_CHANGELOG = "${BuildConfig.APPLICATION_ID}.action.SHOW_BUNDLE_CHANGELOG"
 
         /** Source whose changelog the update notification opens. */
         const val EXTRA_CHANGELOG_BUNDLE_UID = "changelog_bundle_uid"
 
         /** Action behind the changelog button of a manager update notification. */
-        const val ACTION_SHOW_MANAGER_CHANGELOG = "app.morphe.manager.action.SHOW_MANAGER_CHANGELOG"
+        const val ACTION_SHOW_MANAGER_CHANGELOG = "${BuildConfig.APPLICATION_ID}.action.SHOW_MANAGER_CHANGELOG"
 
         /** Action behind a notification opening an app's info dialog. */
-        const val ACTION_SHOW_APP_INFO = "app.morphe.manager.action.SHOW_APP_INFO"
+        const val ACTION_SHOW_APP_INFO = "${BuildConfig.APPLICATION_ID}.action.SHOW_APP_INFO"
 
         /** Package the notification opens the info dialog for. */
         const val EXTRA_APP_INFO_PACKAGE = "app_info_package"
@@ -423,12 +435,12 @@ private fun MorpheManager(vm: MainViewModel) {
         }
     }
 
-    // Handle .mpp file opened from file manager
-    LaunchedEffect(vm.pendingMppUri) {
-        vm.pendingMppUri?.let { uri ->
+    // File opened with or shared to the app
+    LaunchedEffect(vm.pendingIncomingFile) {
+        vm.pendingIncomingFile?.let { file ->
             navController.popBackStack(HomeScreen, false)
-            homeViewModel.setPendingMpp(uri)
-            vm.pendingMppUri = null
+            vm.pendingIncomingFile = null
+            homeViewModel.openIncomingFile(file.uri, file.shared)
         }
     }
 
@@ -515,15 +527,6 @@ private fun MorpheManager(vm: MainViewModel) {
             onConfirm = { trustCaller -> vm.approveExternalBatch(trustCaller) },
             onDismiss = vm::dismissExternalBatch
         )
-    }
-
-    // Handle .apk file shared via share sheet
-    LaunchedEffect(vm.pendingExternalApkUri) {
-        vm.pendingExternalApkUri?.let { uri ->
-            navController.popBackStack(HomeScreen, false)
-            vm.pendingExternalApkUri = null
-            homeViewModel.handleExternalApkUri(uri)
-        }
     }
 
     // Onboarding tour, run over the main screen from its first step
@@ -638,7 +641,7 @@ private fun MorpheManager(vm: MainViewModel) {
             predictivePopEnterTransition = { sharedAxisZEnter(forward = false) },
             predictivePopExitTransition = { Animations.predictiveBackExit }
         ) {
-            composable<HomeScreen> { entry ->
+            screen<HomeScreen> { entry ->
                 val bundleUpdateProgress by homeViewModel.bundleUpdateProgress.collectAsStateWithLifecycle(null)
                 val appInfoTriggerPackage by entry.savedStateHandle.getStateFlow<String?>("app_info_trigger_package", null)
                     .collectAsStateWithLifecycle()
@@ -677,8 +680,8 @@ private fun MorpheManager(vm: MainViewModel) {
                 )
             }
 
-            composable<BatchPatcher> { entry ->
-                val params = entry.getComplexArg<BatchPatcher.ViewModelParams>() ?: return@composable
+            screen<BatchPatcher> { entry ->
+                val params = entry.getComplexArg<BatchPatcher.ViewModelParams>() ?: return@screen
                 BatchPatcherScreen(
                     targets = params.targets,
                     onBackClick = {
@@ -693,8 +696,8 @@ private fun MorpheManager(vm: MainViewModel) {
                 )
             }
 
-            composable<Patcher> { entry ->
-                val params = entry.getComplexArg<Patcher.ViewModelParams>() ?: return@composable
+            screen<Patcher> { entry ->
+                val params = entry.getComplexArg<Patcher.ViewModelParams>() ?: return@screen
                 val patcherViewModel: PatcherViewModel = koinViewModel { parametersOf(params) }
                 val leavePatcher: () -> Unit = {
                     patcherViewModel.stopCompletionSound()
@@ -716,7 +719,7 @@ private fun MorpheManager(vm: MainViewModel) {
                 )
             }
 
-            composable<SettingsDetail> { entry ->
+            screen<SettingsDetail> { entry ->
                 SettingsSubpageScreen(
                     subpage = SettingsSubpage.valueOf(entry.toRoute<SettingsDetail>().subpage),
                     homeViewModel = homeViewModel,
@@ -732,12 +735,16 @@ private fun MorpheManager(vm: MainViewModel) {
                 )
             }
 
-            composable<PatchSelections> {
+            screen<PatchSelections> {
                 PatchSelectionsPage(onBack = { navController.popBackStack(HomeScreen, false) })
             }
 
-            composable<Licenses> {
+            screen<Licenses> {
                 LicensesPage(onBack = { navController.popBackStack() })
+            }
+
+            screen<MiniGames> {
+                MiniGamesPage(onBack = { navController.popBackStack() })
             }
         }
 
@@ -749,11 +756,24 @@ private fun MorpheManager(vm: MainViewModel) {
     }
 }
 
+/**
+ * The destination of route [T], laid out with the dialogs raised on it over it, so they move with
+ * the screen as navigation does, see [ModalLayer].
+ */
+private inline fun <reified T : Any> NavGraphBuilder.screen(
+    noinline content: @Composable AnimatedContentScope.(NavBackStackEntry) -> Unit
+) {
+    composable<T> { entry ->
+        ModalLayer { content(entry) }
+    }
+}
+
 /** Where the settings lead out to, as routes of this navigation, see [SettingsNavigation]. */
 private fun NavController.settingsNavigation(startTour: (() -> Unit)?) = SettingsNavigation(
     openSubpage = { subpage -> navigate(SettingsDetail(subpage.name)) { launchSingleTop = true } },
     openPatchSelections = { navigate(PatchSelections) { launchSingleTop = true } },
     openLicenses = { navigate(Licenses) { launchSingleTop = true } },
+    openMiniGames = { navigate(MiniGames) { launchSingleTop = true } },
     startTour = startTour
 )
 

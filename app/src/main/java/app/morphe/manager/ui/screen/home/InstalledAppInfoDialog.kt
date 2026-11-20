@@ -56,7 +56,6 @@ import app.morphe.manager.domain.repository.PatchHistoryRepository
 import app.morphe.manager.domain.repository.RollbackBackup
 import app.morphe.manager.domain.repository.RollbackBackupRepository
 import app.morphe.manager.patcher.patch.PatchInfo
-import app.morphe.manager.patcher.patch.PatchSourceRef
 import app.morphe.manager.ui.screen.settings.system.InstallerFlowDialogs
 import app.morphe.manager.ui.screen.shared.*
 import app.morphe.manager.ui.screen.sources.*
@@ -118,7 +117,7 @@ fun resolveAppliedBundleAttribution(
 fun DialogHostScope.InstalledAppInfoDialog(
     packageName: String,
     onDismiss: () -> Unit,
-    onTriggerPatchFlow: (originalPackageName: String, repatchedPackageName: String?) -> Unit,
+    onRepatch: (InstalledApp) -> Unit,
     homeViewModel: HomeViewModel,
     viewModel: InstalledAppInfoViewModel,
     installViewModel: InstallViewModel = koinViewModel(),
@@ -191,7 +190,7 @@ fun DialogHostScope.InstalledAppInfoDialog(
     // source, a disabled one included, so the app keeps its color with nothing left to patch it.
     // originalPackageName needed because metadata is keyed by original pkg, not patched.
     val appAccentColor = rememberAppColor(viewModel.installedApp?.originalPackageName ?: packageName)
-        ?: KnownApps.DEFAULT_DOWNLOAD_COLOR
+        ?: AppCardColorDefaults.defaultDownloadColor
     val infoAccentColor = ThemeTraitsDefaults.accentColor(appAccentColor)
 
     // Dialog states
@@ -200,7 +199,7 @@ fun DialogHostScope.InstalledAppInfoDialog(
     // The applied patches and the web links open in place of the information, under its header
     var page by rememberSaveable { mutableStateOf(InfoPage.Main) }
 
-    // The link selection is only ever changed on a system screen, which is left by coming back here
+    // The link selection can also change on a system screen, which is left by coming back here
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
         viewModel.refreshAppLinks()
     }
@@ -267,15 +266,8 @@ fun DialogHostScope.InstalledAppInfoDialog(
             ?: KnownApps.getAppName(packageName)
     }
 
-    // Export file name
-    val exportFileName = remember(installedApp?.currentPackageName, appInfo?.versionName, appliedBundles, appLabel) {
-        val app = installedApp ?: return@remember "morphe_export.apk"
-        ExportNameFormatter.format(PatchedAppExportData(
-            appName = appLabel,
-            packageName = app.currentPackageName,
-            appVersion = appInfo?.versionName ?: app.version,
-            sources = appliedBundles.map { PatchSourceRef(it.title, it.version) }
-        ))
+    val exportFileName = remember(installedApp, appLabel) {
+        installedApp?.exportFileName(appLabel) ?: "morphe_export.apk"
     }
 
     // Offered under the name an export would suggest, so the file lands the same either way
@@ -348,6 +340,7 @@ fun DialogHostScope.InstalledAppInfoDialog(
             AppIcon(
                 packageInfo = viewModel.appInfo,
                 packageName = packageName,
+                storePackageName = catalogPackageName,
                 contentDescription = null,
                 placeholderGradientColors = listOf(infoAccentColor),
                 modifier = modifier
@@ -470,7 +463,7 @@ fun DialogHostScope.InstalledAppInfoDialog(
     // and patching closes the two together as the patcher opens
     fun handlePatchClick() {
         val app = viewModel.installedApp ?: return
-        onTriggerPatchFlow(app.originalPackageName, app.trackingKey)
+        onRepatch(app)
     }
 
     val subpage = when (page) {
@@ -483,16 +476,17 @@ fun DialogHostScope.InstalledAppInfoDialog(
         )
         // Gone with the links, should the app drop them while the page is open
         InfoPage.AppLinks -> viewModel.appLinksStatus?.takeIf { it.hasSupportedLinks }?.let { status ->
+            val controls = rememberAppLinksControls(
+                packageName = installedApp?.currentPackageName ?: packageName,
+                status = status,
+                onRefresh = viewModel::refreshAppLinks
+            )
             InfoSubpage(
                 page = page,
                 subtitle = stringResource(R.string.app_links_title),
-                actions = rememberAppLinksActions(
-                    packageName = installedApp?.currentPackageName ?: packageName,
-                    status = status,
-                    onRefresh = viewModel::refreshAppLinks
-                )
+                actions = controls.actions
             ) {
-                AppLinksContent(status = status, accentColor = infoAccentColor)
+                AppLinksContent(status = status, controls = controls, accentColor = infoAccentColor)
             }
         }
         InfoPage.PatchHistory -> InfoSubpage(
@@ -601,7 +595,7 @@ fun DialogHostScope.InstalledAppInfoDialog(
                     staggerIndex = 1,
                     accentColor = infoAccentColor,
                     mountRestore = mountRestore,
-                    onPatch = { onTriggerPatchFlow(app.originalPackageName, app.trackingKey) },
+                    onPatch = { onRepatch(app) },
                     onShowUpdateChangelog = updateChangelog,
                     onIgnoreVersion = onIgnoreVersion,
                     onOpenAppLinks = { page = InfoPage.AppLinks }
@@ -822,14 +816,17 @@ private fun InstalledAppHeader(
     pageSubtitle: String?
 ) {
     val relativeTime = remember(installedApp.patchedAt) { installedApp.patchedAt?.let { getRelativeTimeString(it) } }
+    // The home card marks it by its glyph alone, so the details name it in full
+    val formFactorMark = rememberAppMetadata()[installedApp.originalPackageName]?.formFactor.mark()
 
-    // What the install is, then when it was made. The clone chip sits between them: it
-    // qualifies the install the same way its type does, rather than dating it
+    // What the install is, then when it was made. The clone and device chips sit between them:
+    // they qualify the install the same way its type does, rather than dating it
     val installBadges = buildList {
         add(installedApp.installType.badge.let { (icon, label) -> icon to stringResource(label) })
         if (installedApp.isClone) {
             add(AppStateIcons.Clone to stringResource(R.string.clone))
         }
+        formFactorMark?.let { add(it.icon to stringResource(it.label)) }
         relativeTime?.let { add(MaterialSymbols.Rounded.Schedule to it) }
     }
     val badges = @Composable {
@@ -846,6 +843,7 @@ private fun InstalledAppHeader(
             AppIcon(
                 packageInfo = appInfo,
                 packageName = packageName,
+                storePackageName = installedApp.originalPackageName,
                 contentDescription = null,
                 placeholderGradientColors = listOf(accentColor),
                 modifier = iconModifier.clip(RoundedCornerShape(DialogHeaderDefaults.IconCornerRadius))

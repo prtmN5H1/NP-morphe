@@ -4,7 +4,12 @@
     <string name="home_other_apps_action">Select other apps</string>
     <string name="home_not_patched_yet">Not patched yet</string>
     <string name="home_unpatched_version_installed">Unpatched version installed</string>
-    <string name="home_unpatched_badge">Not patched</string>
+    <string name="home_app_status_newer_version">Update to %s</string>
+    <string name="home_app_status_newer_patches">New patches</string>
+    <!-- Mark on the card of an app built for a device other than a phone -->
+    <string name="form_factor_tv">TV</string>
+    <string name="form_factor_wearable" translatable="false">Wear OS</string>
+    <string name="form_factor_automotive">Automotive</string>
     <string name="home_no_patches_available">No patches available</string>
     <string name="home_app_hide_title">Hide this app?</string>
     <string name="home_more_apps_title">More apps</string>
@@ -38,6 +43,7 @@
     <!-- Asked when a .mpp file opened from a file manager is another version of a local source, %s being its name -->
     <string name="mpp_import_update_message">This is a new version of %s. Do you want to update it?</string>
     <string name="mpp_import_unreadable">This file cannot be read</string>
+    <string name="incoming_file_not_patch_source">This file is not a patch source</string>
 
     <!-- Home Screen - Update Notifications -->
     <string name="home_update_available">Morphe update available</string>
@@ -50,26 +56,29 @@
     <string name="home_outdated_manager_subtitle">Some patch sources need a newer version</string>
     <string name="home_held_back_title">A patch source crashed Morphe</string>
     <string name="home_held_back_subtitle">It was skipped so the app could start. Tap to review</string>
-    <string name="home_metered_skipped_title">Updates paused on mobile data</string>
-    <string name="home_metered_skipped_subtitle">Tap to allow updates on mobile data</string>
+    <string name="home_source_updates_title">Patch updates available</string>
+    <string name="home_source_updates_subtitle">Tap to download them</string>
     <string name="home_repatch_available_subtitle">Tap to queue them all</string>
     <string name="home_update_error">Update failed</string>
     <string name="home_update_error_subtitle">Something went wrong while updating sources</string>
-    <string name="home_update_skipped_metered">Updates skipped</string>
-    <string name="home_update_skipped_metered_subtitle">Mobile data is active</string>
     <string name="home_updating_sources">Updating sources…</string>
-    <string name="home_update_bundle_count" translatable="false">%1$d / %2$d</string>
     <string name="home_update_success">Update sources complete</string>
     <string name="home_update_success_subtitle">Your sources are up to date</string>
     <string name="home_sources_are_loading">Sources are loading, please wait…</string>
     <string name="home_search_apps">Search apps</string>
     <string name="list_options_title">Sort and filter</string>
     <string name="list_options_state_description">Sorted by %1$s, filtered by %2$s</string>
+    <!-- Orders every sortable list offers -->
+    <string name="list_sort_manual">Manual</string>
+    <string name="list_sort_name_asc">Name (A–Z)</string>
+    <string name="list_sort_name_desc">Name (Z–A)</string>
+    <string name="home_app_filter_all">All</string>
+    <string name="home_app_filter_not_patched">Not patched</string>
     <string name="home_app_filter_clones">Clones</string>
     <string name="home_app_grouping_none">None</string>
     <string name="home_app_sort_manual_hint">Long-press an app, then tap the reorder button</string>
-    <string name="home_app_sort_recommended">Recommended order</string>
-    <string name="home_app_sort_updates_first">Patch updates first</string>
+    <string name="home_app_sort_recommended">Recommended</string>
+    <string name="home_app_sort_updates_first">Updates first</string>
     <string name="home_app_sort_recently_patched">Recently patched</string>
     <string name="home_no_apps_title">No apps available</string>
     <string name="home_no_apps_subtitle">Add a patch source or enable an existing one in %s</string>
@@ -85,6 +94,7 @@
     <string name="home_category_new_title">New category</string>
     <string name="home_category_rename_title">Rename category</string>
     <string name="home_category_name">Category name</string>
+    <string name="home_category_name_description">The home screen groups its apps under this name</string>
     <string name="home_category_move_to">Move to category</string>
     <string name="home_category_move_selected_title">Move selected apps</string>
     <!-- %s is the name of the category -->
@@ -160,26 +170,15 @@
     <string name="sources_search">Search sources and patches</string>
     <!-- Which sources the sources page lists, each with what it keeps -->
     <string name="sources_filter_issues">Need attention</string>
-    <string name="sources_sort_manual">Manual order</string>
     <string name="sources_sort_manual_hint">Long-press a source to reorder</string>
     <string name="sources_sort_last_updated">Last updated</string>
     <string name="sources_sort_enabled_first">Enabled first</string>
-    <string name="sources_sort_enabled_first_description">Show active sources before disabled sources</string>
-    <string name="sources_sort_size_smallest_description">Sort by downloaded bundle size, smallest first</string>
-    <string name="sources_sort_size_largest_description">Sort by downloaded bundle size, largest first</string>
-    <string name="sources_management_downloaded_size">Downloaded size</string>
-    <string name="sources_management_not_downloaded">Not downloaded</string>
-    <string name="settings_advanced_default_experimental_apps">Experimental app versions by default</string>
-    <string name="settings_advanced_default_experimental_apps_description">Enable experimental app targets by default for new sources that provide them. You can still change each source individually.</string>
-    <string name="sources_sort_size_smallest">Size (Small)</string>
-    <string name="sources_sort_size_largest">Size (Large)</string>
-    <string name="custom_fork_credit">Custom fork</string>
     <string name="sources_patches_source_disabled_hint">This source is disabled. Its patches are listed for reference and are not applied</string>
     <string name="sources_management_open_in_browser">Open in browser</string>
     <string name="sources_management_report_issue">Report an issue</string>
     <string name="sources_management_failed_to_open_url">Failed to open URL</string>
     <string name="sources_apps">Apps</string>
-    <string name="sources_apps_description">Ticked apps come from this source. Tap an app to leave it out or bring it back. An app leaves the home screen once no source brings it, unless you have patched it</string>
+    <string name="sources_apps_description">Ticked apps come from this source. Tap an app to leave it out or bring it back, swipe it to see its patches. An app no source brings leaves the home screen, unless you patched it</string>
     <string name="sources_apps_brought">Brought by this source</string>
     <string name="sources_apps_left_out">Left out of this source</string>
     <!-- Under an app left out of a source that keeps its home screen card because the user has patched it -->
@@ -201,76 +200,6 @@
     <string name="sources_management_prerelease_disable">Disable pre-release patches</string>
     <string name="sources_management_experimental_versions_enable">Enable experimental app versions</string>
     <string name="sources_management_experimental_versions_disable">Disable experimental app versions</string>
-    <string name="sources_management_auto_update">Automatic source updates</string>
-    <string name="sources_management_auto_update_description">Check for and download new source releases automatically</string>
-    <string name="sources_management_auto_update_enable">Enable automatic updates</string>
-    <string name="sources_management_auto_update_disable">Disable automatic updates</string>
-    <string name="sources_management_select_version">Source version</string>
-    <string name="sources_management_select_version_description">Choose a GitHub release tag to keep this source on that exact version. Turn automatic updates back on to follow its latest release again.</string>
-    <string name="sources_management_version_installed">Installed: %1$s</string>
-    <string name="sources_management_version_pinned">Pinned to: %1$s</string>
-    <string name="sources_management_version_unavailable">Version information unavailable</string>
-    <string name="sources_management_version_tags_unavailable">No GitHub release tags could be loaded for this source.</string>
-    <string name="sources_management_version_selected">Selected endpoint tag</string>
-    <string name="sources_management_pin_current_versions">Pin installed versions</string>
-    <string name="sources_management_select_versions">Select versions</string>
-    <string name="sources_management_share_title">Share sources</string>
-    <string name="sources_management_share_description">Create one Morphe link for the selected sources. Sharing installed versions locks every source to a matching GitHub release tag; choose source links if any selected source has no matching tag.</string>
-    <string name="sources_management_share_installed_versions">Share installed versions</string>
-    <string name="sources_management_share_latest">Share source links</string>
-    <string name="sources_management_share_failed">Could not create a source link: %s</string>
-    <string name="patch_history_title">Patch history</string>
-    <string name="patch_history_description">Completed patch builds and confirmed installs</string>
-    <string name="patch_history_empty">No patch history has been recorded yet.</string>
-    <string name="patch_history_enabled">Record patch history</string>
-    <string name="patch_history_enabled_description">Keep base APK, patch source, version, and install details for successful builds.</string>
-    <string name="patch_history_app_enabled">Record history for this app</string>
-    <string name="patch_history_app_enabled_description">The global history setting in Settings can still pause recording.</string>
-    <string name="patch_history_clear_all">Clear all history</string>
-    <string name="patch_history_clear_confirm">This removes the saved patch and install history from this device.</string>
-    <string name="patch_history_clear_app">Clear app history</string>
-    <string name="patch_history_clear_app_confirm">This removes the saved patch and install history for this app.</string>
-    <string name="patch_history_base_apk">Base APK</string>
-    <string name="patch_history_download_source">Download source</string>
-    <string name="patch_history_sources">Patch sources</string>
-    <string name="patch_history_patches">Patches</string>
-    <string name="patch_history_libraries">Patcher runtime and libraries</string>
-    <string name="patch_history_manager_version">Manager · patcher</string>
-    <string name="patch_history_output_version">Patched app version</string>
-    <string name="patch_history_patched_at">Patched</string>
-    <string name="patch_history_installed_at">Install confirmed</string>
-    <string name="patch_history_overwrote">Previous version</string>
-    <string name="installer_rollback_installing">Restoring previous version…</string>
-    <string name="installer_rollback_success">Previous app version restored.</string>
-    <string name="installer_rollback_failed">Could not restore the previous app version.</string>
-    <string name="installer_rollback_verify_title">Is the app working properly?</string>
-    <string name="installer_rollback_verify_message">You opened %1$s after installing it. Clear its saved previous version to free storage?</string>
-    <string name="installer_rollback_clear_backup">Clear old backup</string>
-    <string name="installer_rollback_restore">Restore previous version</string>
-    <string name="settings_system_rollback_backup_failed">Morphe could not save a rollback copy, so installation was stopped. Free up storage or turn off rollback backups in Settings to continue.</string>
-    <string name="settings_system_rollback_title">Rollback backups</string>
-    <string name="settings_system_rollback_backup_enabled">Back up before replacing an app</string>
-    <string name="settings_system_rollback_backup_enabled_description">Keep the currently installed APKs so you can restore the previous version.</string>
-    <string name="settings_system_rollback_cleanup_enabled">Ask to clear backups after opening</string>
-    <string name="settings_system_rollback_cleanup_enabled_description">After you return from opening an updated app, Morphe asks whether to remove its old backup.</string>
-    <string name="settings_system_rollback_manage">Previous versions</string>
-    <string name="settings_system_rollback_empty">No previous app versions have been backed up.</string>
-    <string name="settings_system_rollback_delete_title">Delete rollback backup?</string>
-    <string name="settings_system_rollback_delete_message">Remove the saved previous version for %1$s?</string>
-    <string name="settings_system_rollback_clear_all_title">Clear all rollback backups</string>
-    <string name="settings_system_rollback_clear_all_message">This permanently removes every saved previous app version.</string>
-    <string name="settings_system_rollback_version_detail">%1$s · code %2$d</string>
-    <string name="home_app_info_rollback_backup_enabled">Back up this app before replacement</string>
-    <string name="home_app_info_rollback_backup_enabled_description">The global rollback backup setting must also be on.</string>
-    <string name="home_app_info_rollback_cleanup_enabled">Ask to clear this app’s backup after opening</string>
-    <string name="home_app_info_rollback_cleanup_enabled_description">The global cleanup setting must also be on.</string>
-    <string name="home_app_info_rollback_previous_version">Saved previous version</string>
-    <string name="sources_archive_import">Import source archive</string>
-    <string name="sources_archive_export">Export</string>
-    <string name="sources_archive_export_failed">Failed to export sources: %s</string>
-    <string name="sources_archive_export_success">Sources exported</string>
-    <string name="sources_archive_import_failed">Failed to import source archive: %s</string>
-    <string name="sources_archive_import_success">Sources imported</string>
     <string name="sources_management_already_exists">This source has already been added</string>
     <string name="sources_management_invalid_url">Invalid source URL. Please check the address and try again</string>
     <string name="sources_management_blocked">This patch source is blocked and cannot be added</string>
@@ -321,6 +250,8 @@
     <string name="sources_download_fail">Failed to download sources: %s</string>
     <string name="sources_download_fail_named">\'%s\' could not be updated. Check your internet connection and try again</string>
     <string name="sources_download_endpoint_not_found">\'%s\': patch metadata not found</string>
+    <!-- Shown on Android 17 when the Nearby devices permission, which covers the local network, is refused while a source is hosted there -->
+    <string name="sources_local_network_denied">Sources on your local network can\'t be updated without the Nearby devices permission</string>
     <string name="sources_signing_key_changed_named">\'%s\' was not updated because its latest release is not signed by the key it used before</string>
     <string name="sources_signing_key_changed_local">The file is not signed by the key this source used before. To trust it, delete the source and add the file again</string>
     <string name="sources_signing_key_trust_title">Trust the new key?</string>
@@ -339,6 +270,8 @@
     <string name="home_apk_availability_recommended_label">Recommended</string>
     <string name="home_apk_availability_unpatched_label">Unpatched</string>
     <string name="home_apk_availability_incompatible_label">Incompatible</string>
+    <!-- %1$s is the app name, %2$s the version of the unpatched app installed on the device, such as v21.18.164 -->
+    <string name="home_apk_availability_newer_original">The original %1$s on this device is %2$s, newer than the patches support</string>
     <string name="home_apk_availability_find">Yes, help me find it</string>
     <string name="home_apk_availability_have">No, I already have it</string>
     <string name="home_apk_helper_download">Use a helper app</string>
@@ -357,19 +290,6 @@
     <string name="home_apk_helper_installed_unavailable">Morphe could not use the installed app</string>
     <string name="home_apk_helper_installed_incompatible">The installed version cannot be patched</string>
 
-    <string name="home_apk_browser_title">Find an APK</string>
-    <string name="home_apk_browser_choose_title">Choose a browser</string>
-    <string name="home_apk_browser_choose_description">Choose where to open the APK search page.</string>
-    <string name="home_apk_browser_in_app">In-built browser</string>
-    <string name="home_apk_browser_external">External browser</string>
-    <string name="home_apk_browser_remember_choice">Make this the default choice</string>
-    <string name="home_apk_browser_save_permanently">Save downloaded APK permanently</string>
-    <string name="home_apk_browser_save_permanently_description">Save it in the public Downloads folder. Otherwise Morphe removes it after a successful install.</string>
-    <string name="home_apk_browser_download_description">Downloading a base APK in Morphe</string>
-    <string name="home_apk_browser_download_in_progress">An APK download is already in progress.</string>
-    <string name="home_apk_browser_download_failed">The APK download did not complete. You can retry it from this page.</string>
-    <string name="home_apk_browser_not_apk">This download is not an APK or APK bundle.</string>
-    <string name="home_apk_browser_storage_permission_denied">Storage permission is needed to save the file in public Downloads.</string>
     <string name="home_apk_use_saved_copy">Use saved copy</string>
     <string name="home_apk_use_installed_app">Use installed app</string>
     <string name="home_apk_use_saved_unsupported">The patches do not support this saved copy. Patching it will ask you to confirm, or pick another APK</string>
@@ -438,8 +358,6 @@ Choose where to take its APK from"</string>
 
     <!-- Home Screen - Dialog 4: Expert Mode Dialog -->
     <string name="expert_mode_search">Search patches</string>
-    <string name="expert_mode_disable_all">Disable all</string>
-    <string name="expert_mode_enable_all">Enable all</string>
     <string name="expert_mode_enable_all_universal_pending">Tap again for universal patches</string>
     <string name="expert_mode_universal_all_warning_title">Enable all universal patches?</string>
     <string name="expert_mode_universal_all_warning_message">Universal patches are not tested together. Enabling all of them at once can cause conflicts, failed patching, or crashes</string>
@@ -483,6 +401,8 @@ For the best results, this app recommends patching a &lt;b&gt;full APK&lt;/b&gt;
     <string name="home_dialog_unsupported_version_dialog_proceed">Proceed anyway</string>
     <string name="home_dialog_unsupported_version_compatible_versions">Compatible versions:</string>
     <string name="home_dialog_unsupported_version_unsupported_label">Unsupported</string>
+    <string name="home_version_copy">Copy version</string>
+    <string name="home_version_copied">Version copied</string>
     <!-- "Build" here refers to a specific compiled version of the app (versionCode) -->
     <string name="home_dialog_unsupported_version_build">Build %s</string>
     <string name="home_dialog_unsupported_version_build_mismatch_description">This is a different build of the same version. The patches require a specific build</string>
@@ -491,7 +411,7 @@ For the best results, this app recommends patching a &lt;b&gt;full APK&lt;/b&gt;
     <string name="home_dialog_expected_package">Expected package:</string>
     <string name="home_dialog_selected_package">Selected package:</string>
     <string name="home_outdated_patches_dialog_title">Patches may be outdated</string>
-    <string name="home_outdated_patches_dialog_message">Mobile data is active and patch updates are disabled</string>
+    <string name="home_outdated_patches_dialog_message">Newer patches are available but not downloaded yet</string>
     <string name="home_outdated_patches_dialog_warning">Patching with outdated patches may result in a broken app</string>
     <string name="home_outdated_patches_dialog_update_and_patch">Update &amp; patch</string>
     <string name="home_low_disk_space_dialog_title">Low disk space</string>
@@ -588,6 +508,9 @@ For the best results, this app recommends patching a &lt;b&gt;full APK&lt;/b&gt;
     <string name="batch_patch_force_version_done">Queued anyway, the app may break</string>
     <string name="batch_patch_accept_signature_done">Queued anyway, APK not verified</string>
     <string name="batch_patch_apk_selected">APK selected</string>
+    <string name="batch_patch_auto_download_stopped">Automatic APK downloads stopped</string>
+    <string name="batch_patch_auto_download_stop">Stop downloads</string>
+    <string name="batch_patch_auto_download_kept">The downloaded APK could not be used, so the previous one is kept</string>
     <string name="batch_patch_edit_patches">Choose patches</string>
     <string name="batch_patch_state_no_apk">No APK</string>
     <string name="batch_patch_state_no_patches">No patches</string>
@@ -662,9 +585,13 @@ For the best results, this app recommends patching a &lt;b&gt;full APK&lt;/b&gt;
     <string name="app_links_unverified_banner_description">Supported web links currently open in your browser instead of this app</string>
     <string name="app_links_enable_auto">Enable automatically</string>
     <string name="app_links_enable_auto_in_progress">Enabling links…</string>
+    <string name="app_links_disable_all_in_progress">Disabling links…</string>
     <string name="app_links_open_settings">Open link settings</string>
     <string name="app_links_repair_success">App links enabled successfully</string>
     <string name="app_links_repair_failed">Failed to enable app links automatically</string>
+    <string name="app_links_disable_success">App links disabled</string>
+    <string name="app_links_disable_failed">Failed to disable app links</string>
+    <string name="app_links_change_failed">Failed to change app links</string>
     <string name="app_links_all_verified">All supported links are configured to open in this app</string>
     <string name="app_links_fix">Fix links</string>
     <string name="configure">Configure</string>
@@ -726,8 +653,6 @@ For the best results, this app recommends patching a &lt;b&gt;full APK&lt;/b&gt;
     <string name="patcher_field_value_kept">kept</string>
     <string name="patcher_patches_progress_format" translatable="false">%1$s / %2$s</string>
     <string name="patcher_percentage" translatable="false">%s%%</string>
-    <string name="patcher_tab_logs">Patcher logs</string>
-    <string name="patcher_tab_game">Games</string>
     <string name="patcher_logs_waiting">Waiting for log output…</string>
     <string name="patcher_logs_lost">Log output is not kept across app restarts</string>
     <string name="patcher_long_step_warning">This step may take a while. Please wait…</string>
@@ -757,7 +682,6 @@ Uninstalling will permanently erase all app data"</string>
     <string name="patcher_install_error_subtitle">Try uninstalling and installing again</string>
     <string name="patcher_ready_to_mount_subtitle">Press the button below to mount</string>
     <string name="patcher_patches_excluded_for_installer">Not available for this install method and excluded: %s</string>
-    <string name="patcher_back_to_game_hint">Tap %1$s to go back to your game</string>
     <string name="patcher_storage_permission_dialog_title">Cannot access storage path</string>
     <string name="patcher_incompatible_patcher_title">Update required</string>
     <string name="patcher_incompatible_patcher_description">The source &lt;b&gt;%1$s&lt;/b&gt; requires patcher &lt;b&gt;%2$s&lt;/b&gt; or newer. Update Morphe to use it</string>
@@ -872,7 +796,9 @@ Uninstalling will permanently erase all app data"</string>
     <string name="failed_to_mount">Failed to mount: %s</string>
     <string name="failed_to_unmount">Failed to unmount: %s</string>
 
-    <!-- Patcher Screen - Mini-games -->
+    <!-- Mini-games -->
+    <string name="mini_games">Mini-games</string>
+    <string name="mini_games_description">Quick games to pass a spare minute</string>
     <string name="mini_game_score">Score %s</string>
     <string name="mini_game_best">Best %s</string>
     <string name="mini_game_new_record">New record!</string>
@@ -881,7 +807,15 @@ Uninstalling will permanently erase all app data"</string>
     <string name="mini_game_paused">Paused</string>
     <string name="mini_game_resume">Continue</string>
     <string name="mini_game_restart">Start over</string>
-    <string name="mini_game_change">Choose another game</string>
+    <string name="mini_game_pause">Pause</string>
+    <string name="mini_game_score_label">Score</string>
+    <string name="mini_game_best_label">Best</string>
+    <!-- Counts a game keeps besides its score, shown above the field -->
+    <string name="mini_game_level">Level</string>
+    <string name="mini_game_lines">Lines</string>
+    <string name="mini_game_lives">Lives</string>
+    <string name="mini_game_flags">Flags</string>
+    <string name="mini_game_stat_of" translatable="false">%1$s/%2$s</string>
 
     <string name="mini_game_2048" translatable="false">2048</string>
     <string name="mini_game_2048_picker_subtitle">Slide tiles to merge</string>
@@ -909,7 +843,6 @@ Uninstalling will permanently erase all app data"</string>
 
     <string name="mini_game_miner" translatable="false">Miner</string>
     <string name="mini_game_miner_picker_subtitle">Tap to open, hold to flag</string>
-    <string name="mini_game_miner_flags" translatable="false">%1$s/%2$s</string>
 
     <string name="mini_game_pairs" translatable="false">Pairs</string>
     <string name="mini_game_pairs_picker_subtitle">Flip cards, find the match</string>
@@ -1040,8 +973,17 @@ Uninstalling will permanently erase all app data"</string>
     <string name="settings_advanced_updates_prerelease_warning_message">"Pre-release versions of Morphe are still in development and can be unstable.
 
 Patches are not affected: enable pre-release patches for each source in the patch sources list"</string>
-    <string name="settings_advanced_updates_allow_metered">Mobile data updates</string>
-    <string name="settings_advanced_updates_allow_metered_description">Downloads Morphe and patch updates over mobile data</string>
+    <!-- How far Morphe keeps itself and its patch sources up to date when it opens. A pull to refresh always checks -->
+    <string name="settings_auto_updates">Automatic updates</string>
+    <string name="settings_auto_updates_description">What Morphe does about updates when it opens. A pull to refresh always checks</string>
+    <string name="settings_auto_updates_download">Download automatically</string>
+    <string name="settings_auto_updates_download_description">Checks for updates when Morphe opens and downloads patch updates on any network</string>
+    <string name="settings_auto_updates_wifi_only">Download on Wi-Fi only</string>
+    <string name="settings_auto_updates_wifi_only_description">On mobile data, only checks and shows what is available</string>
+    <string name="settings_auto_updates_check_only">Check only</string>
+    <string name="settings_auto_updates_check_only_description">Shows available updates and downloads them once you tap</string>
+    <string name="settings_auto_updates_off">Don\'t check</string>
+    <string name="settings_auto_updates_off_description">Checks only when you pull to refresh</string>
     <string name="settings_advanced_updates_background_notifications">Background update notifications</string>
     <string name="settings_advanced_updates_background_notifications_description">Periodically check for updates in the background and notify when available</string>
     <string name="settings_advanced_updates_background_notifications_description_fcm">Push notifications for new releases, even when the app is closed</string>
@@ -1086,7 +1028,7 @@ Patches are not affected: enable pre-release patches for each source in the patc
     <string name="settings_advanced_expert_mode_dialog_title">Enable Expert mode?</string>
     <string name="settings_advanced_expert_mode_dialog_message">Expert mode gives more control over how patches are applied, but misconfiguring settings in expert mode can result in a non-functional app</string>
     <string name="settings_advanced_strip_unused_libs">Optimize for device architecture</string>
-    <string name="settings_advanced_strip_unused_libs_description">Removes unused native libraries and APK splits</string>
+    <string name="settings_advanced_strip_unused_libs_description">Removes unused native libraries and APK splits from patched apps and saved originals</string>
 
     <!-- Settings - Advanced Tab - GitHub PAT Settings -->
     <string name="settings_advanced_github_pat" translatable="false">GitHub PAT</string>
@@ -1207,6 +1149,7 @@ The image dimensions must be as follows:
     <string name="installer_mount_warning_install">Patch mode is set to root mount. This saved app was not installed using mount</string>
     <string name="mount_version_mismatch_message">Stock app version (%2$s) does not match patched app version (%1$s). Mount the matching stock version, then try again</string>
     <string name="mount_stock_restore_failed_message">Android rejected the saved original APK. Install the matching stock version, then try Mount again</string>
+    <string name="mount_stock_mismatch_message">The installed app is not the original one. Choose the original APK or reinstall the stock version, then try Mount again</string>
     <string name="installer_status_shizuku_unsupported">The installed Shizuku version is not supported</string>
     <string name="installer_action_open_shizuku">Open Shizuku</string>
     <string name="installer_hint_generic">The installation failed. Try again or switch to a different installer</string>
@@ -1317,6 +1260,26 @@ Details: %2$s"</string>
     <string name="settings_system_hide_password_field">Hide password</string>
     <string name="settings_system_morphe_settings">Morphe settings</string>
     <string name="settings_system_import_manager_settings_description">Backs up and restores your Morphe settings</string>
+    <string name="settings_system_export_manager_settings_title">Export Morphe settings</string>
+    <string name="settings_system_export_manager_settings_description">Saves the settings you pick to a file</string>
+    <string name="settings_system_import_manager_settings_file_description">Restores settings from a backup file</string>
+    <string name="settings_system_auto_backup">Automatic backup</string>
+    <string name="settings_system_auto_backup_switch">Back up automatically</string>
+    <string name="settings_system_auto_backup_now">Back up now</string>
+    <string name="settings_system_auto_backup_saved">Backup saved</string>
+    <string name="settings_system_auto_backup_interval_description">Morphe waits at least this long after a copy before making the next one</string>
+    <string name="settings_system_auto_backup_description">Saves your Morphe settings to a folder you pick</string>
+    <string name="settings_system_auto_backup_last">Last backup: %s</string>
+    <string name="settings_system_auto_backup_folder">Folder</string>
+    <string name="settings_system_auto_backup_folder_name">Morphe backups</string>
+    <string name="settings_system_auto_backup_folder_failed">Could not use this folder: %s</string>
+    <string name="settings_system_auto_backup_interval">Backup frequency</string>
+    <string name="settings_system_auto_backup_signing_key">Include signing key</string>
+    <string name="settings_system_auto_backup_signing_key_description">Saves the key that signs patched apps beside the settings</string>
+    <string name="settings_system_auto_backup_signing_key_warning_title">Back up the signing key?</string>
+    <string name="settings_system_auto_backup_signing_key_warning_message">Anyone who gets this file can sign updates that install over your patched apps. Keep the folder private and share it only with your own devices</string>
+    <string name="settings_system_auto_backup_footer">A copy is saved when you leave Morphe after changing something. The newest %s are kept</string>
+    <string name="settings_system_auto_backup_failed">The last backup could not be saved. Pick the folder again</string>
     <string name="settings_system_import_manager_settings_fail">Failed to import Morphe settings: %s</string>
     <string name="settings_system_import_manager_settings_success">Morphe settings imported</string>
     <string name="settings_system_import_manager_settings_mode_title">Import Morphe settings</string>
@@ -1425,6 +1388,7 @@ Details: %2$s"</string>
     <string name="selection_set_deleted">%s deleted</string>
     <string name="selection_set_renamed">Renamed to %s</string>
     <string name="selection_set_rename_title">Rename set</string>
+    <string name="selection_set_rename_description">Taking the name of another set replaces that set</string>
     <string name="selection_set_delete_title">Delete set?</string>
     <string name="selection_set_delete_message">This permanently deletes the set %s</string>
     <string name="copy_selection_empty">No other saved selections to copy from</string>
@@ -1444,11 +1408,8 @@ Details: %2$s"</string>
     <string name="settings_system_apk_download_helper_installed_by_unknown">Installer unknown</string>
     <string name="settings_system_apk_download_helper_open_directly">Open helper right away</string>
     <string name="settings_system_apk_download_helper_open_directly_description">Skips the download instructions and opens the trusted helper</string>
-    <string name="settings_system_apk_browser_preference">Browser for APK searches</string>
-    <string name="settings_system_apk_browser_preference_description">Choose whether APK search pages open in Morphe or another browser. Ask every time clears the default.</string>
-    <string name="settings_system_apk_browser_ask">Ask every time</string>
-    <string name="settings_system_apk_browser_in_app">In-built browser</string>
-    <string name="settings_system_apk_browser_external">External browser</string>
+    <string name="settings_system_apk_download_helper_auto_batch">Download APKs automatically in batch</string>
+    <string name="settings_system_apk_download_helper_auto_batch_description">Checks every queued app for the newest version its patches support and downloads it with the first trusted helper when it is missing or behind</string>
 
     <!-- File Picker -->
     <string name="file_picker_no_files">No files here</string>
@@ -1460,23 +1421,45 @@ Details: %2$s"</string>
     <string name="file_picker_storages">Storages</string>
     <string name="file_saver_downloads_failed">Could not create the file in Downloads</string>
     <string name="file_saver_saving_to_downloads">This device has no save screen, so the file goes to Downloads as %1$s</string>
-    <string name="file_picker_sort_name_asc">Name (A–Z)</string>
-    <string name="file_picker_sort_name_desc">Name (Z–A)</string>
     <string name="file_picker_sort_size_desc">Size (largest first)</string>
     <string name="file_picker_sort_size_asc">Size (smallest first)</string>
     <string name="file_picker_sort_date_desc">Date (newest first)</string>
     <string name="file_picker_sort_date_asc">Date (oldest first)</string>
     <string name="file_picker_show_hidden_files">Show hidden files</string>
+    <string name="file_picker_new_folder">New folder</string>
+    <string name="file_picker_folder_name">Folder name</string>
+    <string name="file_picker_new_folder_description">Created in %1$s and opened right away</string>
+    <string name="file_picker_folder_name_taken">Something with this name is already here</string>
+    <string name="file_picker_folder_name_invalid">A folder name cannot contain \" * / : &lt; &gt; ? \\ |</string>
+    <string name="file_picker_new_folder_failed">Could not create the folder</string>
 
     <!-- Settings - System Tab - About Section -->
     <string name="settings_system_about">About</string>
-    <string name="settings_system_manager_description">An open-source project for modern, streamlined patching of popular Android apps, driven by community feedback and contributions</string>
-    <string name="credits">Credits</string>
-    <string name="credits_description">The people behind Morphe</string>
     <string name="settings_about_section_project">Project</string>
     <string name="settings_about_section_help">Help</string>
-    <string name="credits_current_development">Current development</string>
     <string name="credits_prior_development">Prior development</string>
+    <!-- Names which part of Morphe the About dialog is about, under the name "Morphe". The patched apps say "Patches" in the same place -->
+    <string name="about_component">Manager</string>
+    <string name="about_update_available">Update available: %s</string>
+    <string name="about_up_to_date">Up to date</string>
+    <string name="about_links">Official links</string>
+    <string name="about_link_donate">Donate</string>
+    <string name="about_link_website">Website</string>
+    <string name="about_link_github" translatable="false">GitHub</string>
+    <string name="about_link_reddit" translatable="false">Reddit</string>
+    <string name="about_link_translations">Translations</string>
+    <string name="contributors">Contributors</string>
+    <!-- Periods the contributors are listed for, picked from a menu in the header -->
+    <string name="contributors_all_time">All time</string>
+    <string name="contributors_6_months">6 months</string>
+    <string name="contributors_3_months">3 months</string>
+    <!-- People who donate to Morphe -->
+    <string name="supporters">Supporters</string>
+    <string name="supporters_description">Backers on Open Collective</string>
+    <string name="supporters_become">Become a supporter</string>
+    <!-- Row under a list of people, leading to the rest of them. %s is how many more there are -->
+    <string name="people_more">And %s more</string>
+    <string name="people_unavailable">Could not load the list</string>
     <string name="opensource_licenses">Open-source licenses</string>
     <string name="opensource_licenses_description">The libraries Morphe is built on</string>
     <string name="opensource_licenses_search">Search libraries and licenses</string>
@@ -1493,7 +1476,7 @@ Details: %2$s"</string>
     <string name="easter_egg_pill_blue_toast_again">Unplugged. The way back is where it always was</string>
 
     <!-- Shared strings -->
-    <string name="app_name" translatable="false">Morphe</string>
+    <string name="app_name" translatable="false">NPmorphe</string>
     <string name="select_file">Select file</string>
     <string name="select_files">Select files</string>
     <!-- Label of a footer button beside "Close". Keep it short, a longer one moves the buttons onto two rows -->
@@ -1514,6 +1497,7 @@ Details: %2$s"</string>
     <string name="settings_section_about_summary">More about Morphe and getting help</string>
     <string name="settings_section_local_files">Files</string>
     <string name="settings_section_backup">Backup</string>
+    <string name="settings_section_import_export">Import and export</string>
     <string name="settings_search">Search settings</string>
     <string name="yes">Yes</string>
     <string name="no">No</string>
@@ -1531,7 +1515,9 @@ Details: %2$s"</string>
     <string name="ready">Ready</string>
     <string name="retry">Retry</string>
     <string name="refresh">Refresh</string>
+    <string name="progress_count" translatable="false">%1$s / %2$s</string>
     <string name="add">Add</string>
+    <string name="create">Create</string>
     <string name="close">Close</string>
     <string name="back">Back</string>
     <string name="next">Next</string>
@@ -1547,6 +1533,8 @@ Details: %2$s"</string>
     <string name="include">Include</string>
     <string name="disable">Disable</string>
     <string name="enable">Enable</string>
+    <string name="enable_all">Enable all</string>
+    <string name="disable_all">Disable all</string>
     <string name="trust">Trust</string>
     <string name="loading">Loading…</string>
     <string name="creating">Creating…</string>
@@ -1595,6 +1583,7 @@ Details: %2$s"</string>
     <string name="author">Author</string>
     <!-- A file a patch source is added from, as a field label -->
     <string name="file">File</string>
+    <!-- Chip marking an install as a copy of an app kept alongside it, a noun rather than an action -->
     <string name="clone">Clone</string>
     <!-- Button that starts patching the selected app. A verb, as in "patch this app" -->
     <string name="patch">Patch</string>

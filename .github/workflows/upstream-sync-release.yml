@@ -278,7 +278,7 @@ jobs:
 
               missing_custom_state=""
               constants_file="app/src/main/java/app/morphe/manager/util/Constants.kt"
-              credits_file="app/src/main/java/app/morphe/manager/ui/screen/settings/system/CreditsDialog.kt"
+              custom_strings_file="app/src/main/res/values/npmorphe_strings.xml"
               if ! grep -Fq 'const val CUSTOM_SOURCE_REPO_URL = "https://github.com/prtmN5H1/NP-morphe"' "$constants_file"; then
                 missing_custom_state+="${constants_file}: custom repository URL missing\n"
               fi
@@ -291,11 +291,11 @@ jobs:
               if ! grep -Fq 'const val MANAGER_PRERELEASE_JSON_URL = "https://raw.githubusercontent.com/prtmN5H1/NP-morphe/' "$constants_file"; then
                 missing_custom_state+="${constants_file}: prerelease updater metadata URL is no longer custom\n"
               fi
-              if ! grep -Fq 'const val CUSTOM_DEVELOPER_NAME = "prtmN5H1 (NP-morphe)"' "$constants_file"; then
+              if ! grep -Fq 'const val CUSTOM_DEVELOPER_NAME = "prtmN5H1 (NPmorphe)"' "$constants_file"; then
                 missing_custom_state+="${constants_file}: custom developer credit missing\n"
               fi
-              if ! grep -Fq 'CUSTOM_SOURCE_REPO_URL' "$credits_file"; then
-                missing_custom_state+="${credits_file}: custom repository credit missing\n"
+              if ! grep -Fq 'name="custom_fork_credit"' "$custom_strings_file"; then
+                missing_custom_state+="${custom_strings_file}: fork credit string missing\n"
               fi
               if [[ ! -f app-release.json ]]; then
                 missing_custom_state+="app-release.json: custom updater metadata file missing\n"
@@ -427,7 +427,7 @@ jobs:
             echo "::error::Gradle did not produce a release APK."
             exit 1
           fi
-          apk_path="$RUNNER_TEMP/morphe-manager-${{ steps.upstream.outputs.version }}.apk"
+          apk_path="$RUNNER_TEMP/NPmorphe-${{ steps.upstream.outputs.version }}.apk"
           cp "$apk_source" "$apk_path"
           apksigner_path="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -print | sort -V | tail -n1)"
           if [[ -z "$apksigner_path" ]]; then
@@ -451,10 +451,10 @@ jobs:
           if [[ -z "$PUBLISHED_AT" ]]; then PUBLISHED_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"; fi
           if [[ -n "$UPSTREAM_TAG" ]]; then
             UPSTREAM_TAG_JSON="$UPSTREAM_TAG"
-            attribution="Built and signed by NP-morphe from upstream tag ${UPSTREAM_TAG}."
+            attribution="Built and signed by NPmorphe from upstream tag ${UPSTREAM_TAG}."
           else
             UPSTREAM_TAG_JSON=""
-            attribution="Built and signed by NP-morphe as a manually forced custom release."
+            attribution="Built and signed by NPmorphe as a manually forced custom release."
           fi
 
           RELEASE_VERSION="$VERSION" \
@@ -475,7 +475,7 @@ jobs:
           metadata.version = version;
           metadata.upstream_tag = upstreamTag || null;
           metadata.created_at = process.env.RELEASE_PUBLISHED_AT;
-          metadata.download_url = `https://github.com/prtmN5H1/NP-morphe/releases/download/${tag}/morphe-manager-${version}.apk`;
+          metadata.download_url = `https://github.com/prtmN5H1/NP-morphe/releases/download/${tag}/NPmorphe-${version}.apk`;
           // APKs are Android-keystore signed by Gradle; this workflow does not publish a detached GPG signature.
           metadata.signature_download_url = '';
           metadata.description = [notes, attribution].filter(Boolean).join('\n\n');
@@ -505,12 +505,12 @@ jobs:
           notes="$RUNNER_TEMP/release-notes.md"
           cat "$RUNNER_TEMP/upstream-release-notes.md" > "$notes"
           if [[ -n "$UPSTREAM_TAG" ]]; then
-            printf '\n\nBuilt and signed by [NP-morphe](https://github.com/prtmN5H1/NP-morphe) from upstream `%s`.\n' "$UPSTREAM_TAG" >> "$notes"
+            printf '\n\nBuilt and signed by [NPmorphe](https://github.com/prtmN5H1/NP-morphe) from upstream `%s`.\n' "$UPSTREAM_TAG" >> "$notes"
           else
-            printf '\n\nBuilt and signed by [NP-morphe](https://github.com/prtmN5H1/NP-morphe) from the current custom main branch.\n' >> "$notes"
+            printf '\n\nBuilt and signed by [NPmorphe](https://github.com/prtmN5H1/NP-morphe) from the current custom main branch.\n' >> "$notes"
           fi
 
-          title="Morphe Manager ${RELEASE_TAG} (NP-morphe)"
+          title="NPmorphe v${VERSION}"
           if gh release view "$RELEASE_TAG" --repo "$CUSTOM_REPOSITORY" > /dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" "$APK_PATH" --repo "$CUSTOM_REPOSITORY" --clobber
             gh release edit "$RELEASE_TAG" --repo "$CUSTOM_REPOSITORY" --title "$title" --notes-file "$notes"
