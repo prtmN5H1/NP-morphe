@@ -212,7 +212,7 @@ fun NPmorpheSettings(
                             val prefix = packageName + APK_BROWSER_APP_DEFAULT_URL_SEPARATOR
                             scope.launch {
                                 prefs.apkBrowserAppDefaultUrls.update(
-                                    prefs.apkBrowserAppDefaultUrls.get().filterNot { it.startsWith(prefix) }
+                                    prefs.apkBrowserAppDefaultUrls.get().filterNot { it.startsWith(prefix) }.toSet()
                                 )
                             }
                         },

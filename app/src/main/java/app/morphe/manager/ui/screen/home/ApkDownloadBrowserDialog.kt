@@ -34,7 +34,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -176,10 +175,9 @@ internal fun DialogHostScope.ApkDownloadBrowserDialog(
                 request.setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, fileName)
             }
 
-            manager.enqueue(request).also { id ->
-                pendingDownloads[id] = download
-                downloading = true
-            }
+            val downloadId: Long = manager.enqueue(request)
+            pendingDownloads[downloadId] = download
+            downloading = true
         }.onFailure {
             Log.w("MorpheApkBrowser", "Could not start the APK download", it)
             messages.show(R.string.home_apk_browser_download_failed)
@@ -340,7 +338,7 @@ internal fun DialogHostScope.ApkDownloadBrowserDialog(
                                     val prefix = packageName + APK_BROWSER_APP_DEFAULT_URL_SEPARATOR
                                     val current = prefs.apkBrowserAppDefaultUrls.get()
                                     prefs.apkBrowserAppDefaultUrls.update(
-                                        current.filterNot { it.startsWith(prefix) } + "$prefix$currentUrl"
+                                        (current.filterNot { it.startsWith(prefix) } + "$prefix$currentUrl").toSet()
                                     )
                                 }
                             }
@@ -434,7 +432,7 @@ internal fun DialogHostScope.ApkDownloadBrowserDialog(
                 }
             }
         }
-    )
+    }
 }
 
 private fun Context.findActivityContext(): Context = when (this) {
