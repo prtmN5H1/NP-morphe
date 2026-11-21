@@ -251,7 +251,7 @@ class CommunityCatalogActivity : ComponentActivity() {
         runCatching { view.stopLoading() }
         runCatching { view.removeJavascriptInterface("NPMorpheCatalog") }
         runCatching { view.webChromeClient = null }
-        runCatching { view.webViewClient = null }
+        runCatching { view.webViewClient = WebViewClient() }
         runCatching { (view.parent as? ViewGroup)?.removeView(view) }
         runCatching { view.destroy() }
         if (webView === view) webView = null

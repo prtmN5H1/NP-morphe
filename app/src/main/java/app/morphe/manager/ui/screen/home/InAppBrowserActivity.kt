@@ -351,7 +351,7 @@ class InAppBrowserActivity : ComponentActivity() {
         runCatching { view.stopLoading() }
         runCatching { view.setDownloadListener(null) }
         runCatching { view.webChromeClient = null }
-        runCatching { view.webViewClient = null }
+        runCatching { view.webViewClient = WebViewClient() }
         runCatching { (view.parent as? ViewGroup)?.removeView(view) }
         runCatching { view.destroy() }
         if (browserWebView === view) browserWebView = null
