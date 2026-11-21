@@ -1,5 +1,5 @@
 {
-  "created_at": "2026-11-21T17:41:27Z",
+  "created_at": "2026-11-21T20:59:15Z",
   "description": "Forced custom build from main; no upstream tag was available.\n\nBuilt and signed by NPmorphe as a manually forced custom release.",
   "download_url": "https://github.com/prtmN5H1/NP-morphe/releases/download/v2.7.0-dev.7/NPmorphe-2.7.0-dev.7.apk",
   "signature_download_url": "",
