@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -58,6 +59,7 @@ import com.composables.icons.materialsymbols.MaterialSymbols
 import com.composables.icons.materialsymbols.rounded.*
 import kotlinx.coroutines.launch
 import org.koin.compose.koinInject
+import org.json.JSONObject
 import java.util.Locale
 
 /**
@@ -124,7 +126,26 @@ fun AddSourcePanel(
                     .fillMaxHeight()
                     .padding(bottom = Defaults.SpaceSmall)
             ) {
-                PanelHeader(title = { PanelTitle(text = stringResource(R.string.sources_dialog_community)) }) {
+                val alreadyAddedLabel = stringResource(R.string.npmorphe_catalog_already_added)
+                val selectedLabel = stringResource(R.string.npmorphe_catalog_selected)
+                PanelHeader(title = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(Defaults.SpaceSmall)
+                    ) {
+                        PanelTitle(text = stringResource(R.string.sources_dialog_community))
+                        if (remote.readyLinks.isNotEmpty()) {
+                            Text(
+                                text = stringResource(R.string.npmorphe_catalog_selected_count, remote.readyLinks.size),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                modifier = Modifier
+                                    .background(MaterialTheme.colorScheme.secondaryContainer, CircleShape)
+                                    .padding(horizontal = Defaults.SpaceSmall, vertical = 2.dp)
+                            )
+                        }
+                    }
+                }) {
                     TitleAction(
                         icon = MaterialSymbols.Rounded.Arrow_back,
                         contentDescription = stringResource(android.R.string.cancel),
@@ -153,6 +174,8 @@ fun AddSourcePanel(
                     isSourceQueued = { url ->
                         remote.readyLinks.any { it.trimEnd('/').equals(url.trimEnd('/'), ignoreCase = true) }
                     },
+                    alreadyAddedLabel = alreadyAddedLabel,
+                    selectedLabel = selectedLabel,
                     onWebViewCreated = { communityWebView = it },
                     modifier = Modifier
                         .weight(1f)
@@ -170,6 +193,7 @@ fun AddSourcePanel(
                             state = remote,
                             files = emptyList(),
                             onRemoveFile = {},
+                            showOrdinals = true,
                         )
                     }
                     NewSourceOptionsGroup(
@@ -402,8 +426,11 @@ private class RemoteLinksState(
             "https://" + addSourceUrl.removePrefix("intent://").substringBefore("#Intent;")
         } else addSourceUrl
         val uri = runCatching { Uri.parse(normalizedLink) }.getOrNull() ?: return null
-        val acceptedHosts = setOf("morphe.software", Uri.parse(COMMUNITY_PATCHES_URL).host)
-        if (uri.host !in acceptedHosts || uri.path != "/add-source") return null
+        val host = uri.host?.lowercase(Locale.ROOT) ?: return null
+        val communityHost = Uri.parse(COMMUNITY_PATCHES_URL).host.orEmpty().lowercase(Locale.ROOT)
+        val acceptedHost = host == "morphe.software" || host.endsWith(".morphe.software") ||
+            host == communityHost || host.endsWith(".$communityHost")
+        if (!acceptedHost || uri.path != "/add-source") return null
         return uri.getQueryParameter("github")?.let { "https://github.com/$it" }
             ?: uri.getQueryParameter("gitlab")?.let { "https://gitlab.com/$it" }
     }
@@ -584,19 +611,21 @@ internal fun RemoteUrlCheckHint(check: RemoteUrlCheck?, showHint: Boolean) {
 private fun PendingSources(
     state: RemoteLinksState,
     files: List<PickedBundle>,
-    onRemoveFile: (Uri) -> Unit
+    onRemoveFile: (Uri) -> Unit,
+    showOrdinals: Boolean = false,
 ) {
     if (state.entries.isEmpty() && files.isEmpty()) return
 
     Column(verticalArrangement = Arrangement.spacedBy(CompactCardSpacing)) {
-        state.entries.forEach { entry ->
+        state.entries.forEachIndexed { index, entry ->
             val rejection = (entry.check as? RemoteUrlCheck.Rejected)?.reason
             PendingSourceRow(
                 icon = remoteLinkIcon(entry.link),
                 title = remoteLinkTitle(entry.link),
                 detail = rejection?.let { stringResource(it.hintRes) } ?: entry.link.bareLink(),
                 isError = rejection != null,
-                onRemove = { state.remove(entry.link) }
+                onRemove = { state.remove(entry.link) },
+                ordinal = (index + 1).takeIf { showOrdinals },
             )
         }
         files.forEach { file ->
@@ -612,7 +641,7 @@ private fun PendingSources(
                     else -> file.uri.toFilePath().takeIf { it.startsWith("/") }?.substringBeforeLast("/").orEmpty()
                 },
                 isError = check == LocalFileCheck.Duplicate || check == LocalFileCheck.NotBundle,
-                onRemove = { onRemoveFile(file.uri) }
+                onRemove = { onRemoveFile(file.uri) },
             )
         }
     }
@@ -628,11 +657,25 @@ private fun PendingSourceRow(
     title: String,
     detail: String,
     isError: Boolean,
-    onRemove: () -> Unit
+    onRemove: () -> Unit,
+    ordinal: Int? = null,
 ) {
     val colors = MaterialTheme.colorScheme
     CompactListCard(onClick = null) {
-        if (isError) {
+        if (ordinal != null) {
+            Box(
+                modifier = Modifier
+                    .size(CompactCardGlyphSize)
+                    .background(colors.secondaryContainer, CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = ordinal.toString(),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = colors.onSecondaryContainer
+                )
+            }
+        } else if (isError) {
             CompactCardIconTile(containerColor = colors.errorContainer, contentColor = colors.onErrorContainer) {
                 Icon(MaterialSymbols.Rounded.Error, contentDescription = null, modifier = Modifier.size(CompactCardGlyphSize))
             }
@@ -663,6 +706,8 @@ private fun CommunityCatalogWebView(
     onRemoveSource: (String) -> Boolean,
     isSourceAdded: (String) -> Boolean,
     isSourceQueued: (String) -> Boolean,
+    alreadyAddedLabel: String,
+    selectedLabel: String,
     onWebViewCreated: (WebView) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -700,6 +745,8 @@ private fun CommunityCatalogWebView(
                 settings.allowFileAccess = false
                 settings.allowContentAccess = false
                 settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
+                android.webkit.CookieManager.getInstance().setAcceptCookie(true)
+                android.webkit.CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
 
                 addJavascriptInterface(object {
                     @JavascriptInterface
@@ -713,16 +760,32 @@ private fun CommunityCatalogWebView(
                 }, "MorpheCatalog")
 
                 webViewClient = object : WebViewClient() {
-                    private fun handleNavigation(url: String): Boolean {
+                    private fun handleNavigation(view: WebView, url: String, mainFrame: Boolean): Boolean {
+                        if (!mainFrame) return false
                         val normalizedUrl = if (url.startsWith("intent://")) {
                             "https://" + url.removePrefix("intent://").substringBefore("#Intent;")
                         } else url
+                        val navigationUri = runCatching { Uri.parse(normalizedUrl) }.getOrNull()
+                            ?: return true
+                        val navigationHost = navigationUri.host.orEmpty().lowercase(Locale.ROOT)
+                        val communityHost = Uri.parse(COMMUNITY_PATCHES_URL).host.orEmpty().lowercase(Locale.ROOT)
+                        val allowedHost = navigationHost == "morphe.software" ||
+                                navigationHost.endsWith(".morphe.software") ||
+                                navigationHost == communityHost ||
+                                navigationHost.endsWith(".$communityHost")
+                        if (navigationUri.scheme in setOf("http", "https") && !allowedHost) {
+                            android.util.Log.d("MorpheCommunityWeb", "Blocked external top-level navigation: $navigationHost")
+                            android.widget.Toast.makeText(
+                                view.context,
+                                R.string.npmorphe_catalog_external_navigation_blocked,
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                            return true
+                        }
                         val repository = runCatching {
-                            val uri = Uri.parse(normalizedUrl)
-                            val acceptedHosts = setOf("morphe.software", Uri.parse(COMMUNITY_PATCHES_URL).host)
-                            if (uri.host !in acceptedHosts || uri.path != "/add-source") return@runCatching null
-                            uri.getQueryParameter("github")?.let { "https://github.com/$it" }
-                                ?: uri.getQueryParameter("gitlab")?.let { "https://gitlab.com/$it" }
+                            if (!allowedHost || navigationUri.path != "/add-source") return@runCatching null
+                            navigationUri.getQueryParameter("github")?.let { "https://github.com/$it" }
+                                ?: navigationUri.getQueryParameter("gitlab")?.let { "https://gitlab.com/$it" }
                         }.getOrNull()
                         if (repository != null) {
                             if (currentIsQueued(repository)) currentRemove(normalizedUrl)
@@ -734,12 +797,14 @@ private fun CommunityCatalogWebView(
                     }
 
                     override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean =
-                        handleNavigation(url)
+                        handleNavigation(view, url, mainFrame = true)
 
                     override fun shouldOverrideUrlLoading(
                         view: WebView,
                         request: android.webkit.WebResourceRequest
-                    ): Boolean = handleNavigation(request.url.toString())
+                    ): Boolean = if (request.isForMainFrame) {
+                        handleNavigation(view, request.url.toString(), mainFrame = true)
+                    } else false
 
                     override fun onPageFinished(view: WebView, url: String) {
                         super.onPageFinished(view, url)
@@ -751,14 +816,18 @@ private fun CommunityCatalogWebView(
                               if (!document.getElementById('morphe-catalog-status-style')) {
                                 var style = document.createElement('style');
                                 style.id = 'morphe-catalog-status-style';
-                                style.textContent = 'a[data-morphe-status="added"]::after{content:" · Added";font-size:.8em;opacity:.72}a[data-morphe-status="queued"]::after{content:" · Queued ✓";font-size:.8em;opacity:.82}';
+                                var labels = {added:${JSONObject.quote(alreadyAddedLabel)}, selected:${JSONObject.quote(selectedLabel)}};
+                                style.textContent = 'a[data-morphe-status="added"]::after{content:" · '+labels.added+'";font-size:.8em;opacity:.72}a[data-morphe-status="queued"]::after{content:" · '+labels.selected+'";font-size:.8em;opacity:.82}';
                                 document.head.appendChild(style);
                               }
                               function sourceUrl(href) {
                                 try {
                                   if (href.indexOf('intent://') === 0) href = 'https://' + href.substring(9).split('#Intent;')[0];
                                   var u = new URL(href, location.href);
-                                  if (u.hostname !== 'morphe.software' && u.hostname !== 'morphe-patches.software') return null;
+                                  var host = u.hostname.toLowerCase();
+                                  var allowed = host === 'morphe.software' || host.endsWith('.morphe.software') ||
+                                    host === 'morphe-patches.software' || host.endsWith('.morphe-patches.software');
+                                  if (!allowed) return null;
                                   if (u.pathname !== '/add-source') return null;
                                   var owner = u.searchParams.get('github');
                                   if (owner) return 'https://github.com/' + owner.replace(/^\/+|\/+$/g, '');

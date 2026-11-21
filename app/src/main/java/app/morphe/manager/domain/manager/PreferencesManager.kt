@@ -110,6 +110,9 @@ class PreferencesManager(
     /** UIDs of remote bundles excluded from automatic release checks and downloads. */
     val bundleAutoUpdatesDisabled = stringSetPreference("bundle_auto_updates_disabled", emptySet())
 
+    /** Remote bundle sources whose local patch bundle is removed and whose auto-load is paused. */
+    val bundleLoadingPaused = stringSetPreference("bundle_loading_paused", emptySet())
+
     /** UIDs and source endpoints a release tag pin should return to when automatic updates resume. */
     val bundleVersionPins = stringSetPreference("bundle_version_pins", emptySet())
 
@@ -228,6 +231,9 @@ class PreferencesManager(
 
     /** Where APK search pages open; ASK leaves the choice with the user each time. */
     val apkBrowserPreference = enumPreference("apk_browser_preference", ApkBrowserPreference.ASK)
+
+    /** User-selected default site opened by the in-app APK browser; blank uses APKMirror. */
+    val apkBrowserDefaultUrl = stringPreference("apk_browser_default_url", "")
 
     /** Whether a batch queue asks the trusted helper for APKs that are missing or behind on its own. */
     val autoDownloadApkHelpersInBatch = booleanPreference("auto_download_apk_helpers_in_batch", false)

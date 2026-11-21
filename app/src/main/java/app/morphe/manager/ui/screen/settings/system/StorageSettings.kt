@@ -282,7 +282,7 @@ private fun SavedApksSection(
 
 /** Durable rollback copies, their global controls, and one-tap restore. */
 @Composable
-private fun RollbackBackupSettingsSection(viewModel: StorageManagementViewModel) {
+internal fun RollbackBackupSettingsSection(viewModel: StorageManagementViewModel) {
     val repository = koinInject<RollbackBackupRepository>()
     val installViewModel: InstallViewModel = koinViewModel()
     val backups by repository.backups.collectAsStateWithLifecycle()

@@ -222,13 +222,9 @@ fun DialogHostScope.InstalledAppInfoDialog(
     LaunchedEffect(rollbackBackupRepository) { rollbackBackupRepository.refresh() }
     val rollbackPackageName = installedApp?.currentPackageName ?: packageName
     val rollbackBackup = rollbackBackups.firstOrNull { it.packageName == rollbackPackageName }
-    val historyPackageNames = remember(packageName, installedApp?.originalPackageName) {
-        setOfNotNull(packageName, installedApp?.originalPackageName)
-    }
-    val appHistoryEntries = remember(patchHistoryEntries, packageName, installedApp?.originalPackageName) {
-        patchHistoryEntries.filter {
-            it.packageName == packageName || it.packageName == installedApp?.originalPackageName
-        }
+    val historyPackageNames = remember(rollbackPackageName) { setOf(rollbackPackageName) }
+    val appHistoryEntries = remember(patchHistoryEntries, rollbackPackageName) {
+        patchHistoryEntries.filter { it.packageName == rollbackPackageName }
     }
     val appHistoryEnabled = historyPackageNames.none { it in historyDisabledApps }
     val showClearAppHistory = rememberSaveable { mutableStateOf(false) }

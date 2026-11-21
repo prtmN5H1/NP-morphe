@@ -73,6 +73,9 @@ const val MORPHE_WEBSITE_URL = "https://$MORPHE_WEBSITE_HOST"
 const val MORPHE_API_URL = "https://api.$MORPHE_WEBSITE_HOST"
 const val COMMUNITY_PATCHES_URL = "https://morphe-patches.software"
 
+/** Immutable built-in search destination for finding an APK when no custom default is saved. */
+const val APK_BROWSER_DEFAULT_URL = "https://www.apkmirror.com/?post_type=app_release&searchtype=apk&s={query}"
+
 /** Sent on every request to [MORPHE_API_URL]. */
 const val MORPHE_USER_AGENT = "Morphe-Manager/${BuildConfig.VERSION_CODE}"
 

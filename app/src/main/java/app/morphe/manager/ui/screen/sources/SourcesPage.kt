@@ -101,11 +101,7 @@ fun SourcesPage(
     val repository = homeViewModel.patchBundleRepository
     val importExportViewModel: ImportExportViewModel = koinViewModel()
     val pendingArchiveExportUids = remember { mutableStateOf<Set<Int>?>(null) }
-    val openSourceArchive = rememberAdaptiveFilePicker(
-        mimeTypes = arrayOf(SOURCE_ARCHIVE_MIMETYPE, "application/zip", "application/x-zip-compressed"),
-        customPickerMimeTypes = arrayOf(SOURCE_ARCHIVE_MIMETYPE),
-        onResult = { uri -> uri?.let(importExportViewModel::importSourcesArchive) }
-    )
+    val context = LocalContext.current
     val saveSourceArchive = rememberDocumentSaver(SOURCE_ARCHIVE_MIMETYPE) { uri ->
         // Set by the selection action before the document picker is launched.
         pendingArchiveExportUids.value?.let { importExportViewModel.exportSourcesArchive(it, uri) }
@@ -123,9 +119,28 @@ fun SourcesPage(
         }
     )
 
-    val openBundlePicker = rememberAdaptiveMultiFilePicker(
-        mimeTypes = MPP_FILE_MIME_TYPES,
-        onResult = homeViewModel::pickBundles
+    val sourceFileMimeTypes = remember {
+        (MPP_FILE_MIME_TYPES + arrayOf(SOURCE_ARCHIVE_MIMETYPE, "application/zip", "application/x-zip-compressed"))
+            .distinct().toTypedArray()
+    }
+    val openSourceFilesPicker = rememberAdaptiveMultiFilePicker(
+        mimeTypes = sourceFileMimeTypes,
+        customPickerMimeTypes = sourceFileMimeTypes,
+        onResult = { uris ->
+            val archives = mutableListOf<android.net.Uri>()
+            val bundles = mutableListOf<android.net.Uri>()
+            uris.forEach { uri ->
+                val displayName = uri.displayName(context.contentResolver).orEmpty()
+                val type = context.contentResolver.getType(uri)
+                val isMpp = displayName.endsWith(".mpp", ignoreCase = true)
+                val isArchive = !isMpp && (uri.hasSourceArchiveExtension(context.contentResolver) ||
+                        type == SOURCE_ARCHIVE_MIMETYPE || type == "application/zip" ||
+                        type == "application/x-zip-compressed")
+                if (isArchive) archives += uri else bundles += uri
+            }
+            bundles.takeIf { it.isNotEmpty() }?.let(homeViewModel::pickBundles)
+            archives.forEach(importExportViewModel::importSourcesArchive)
+        }
     )
 
     // The files picked are held outside for the picker's round trip, so they go once the panel does
@@ -139,7 +154,6 @@ fun SourcesPage(
         onboardingState = onboardingState,
         alertsHeight = alertsHeight,
         onHeaderHeightChange = onHeaderHeightChange,
-        onImportArchive = openSourceArchive,
         onExportArchive = { uids ->
             if (uids.isNotEmpty()) {
                 pendingArchiveExportUids.value = uids
@@ -155,7 +169,7 @@ fun SourcesPage(
                     state.closeAddSource()
                     onSourceAdded()
                 },
-                onPickFiles = { openBundlePicker() },
+                onPickFiles = openSourceFilesPicker,
                 onRemoveFile = homeViewModel::unpickBundle,
                 localFiles = homeViewModel.pickedBundleImports,
                 onCheckUrl = repository::checkRemoteUrl,
@@ -163,8 +177,8 @@ fun SourcesPage(
             )
         },
         onDelete = { bundles -> scope.launch { repository.remove(*bundles.toTypedArray()) } },
-        onCreateSourceShareUri = { bundles, pinInstalledVersions ->
-            importExportViewModel.createSourceShareUri(bundles.mapTo(mutableSetOf()) { it.uid }, pinInstalledVersions)
+        onCreateSourceShareText = { bundles, pinInstalledVersions ->
+            importExportViewModel.createSourceShareText(bundles.mapTo(mutableSetOf()) { it.uid }, pinInstalledVersions)
         },
         onToggleEnabled = { bundles -> scope.launch { repository.disable(*bundles.toTypedArray()) } },
         onUpdate = { bundles ->
@@ -195,11 +209,10 @@ private fun SourcesPageContent(
     onboardingState: OnboardingState?,
     alertsHeight: () -> Dp,
     onHeaderHeightChange: (Dp) -> Unit,
-    onImportArchive: () -> Unit,
     onExportArchive: (Set<Int>) -> Unit,
     addSourcePanel: @Composable () -> Unit,
     onDelete: (List<PatchBundleSource>) -> Unit,
-    onCreateSourceShareUri: suspend (List<RemotePatchBundle>, Boolean) -> String,
+    onCreateSourceShareText: suspend (List<RemotePatchBundle>, Boolean) -> String,
     // Flips each source, on or off
     onToggleEnabled: (List<PatchBundleSource>) -> Unit,
     onUpdate: (List<PatchBundleSource>) -> Unit,
@@ -220,6 +233,7 @@ private fun SourcesPageContent(
     val metadataFetchErrors by patchBundleRepository.metadataFetchErrors.collectAsStateWithLifecycle(emptyMap())
     val experimentalVersionsEnabled by prefs.bundleExperimentalVersionsEnabled.getAsState()
     val autoUpdatesDisabled by prefs.bundleAutoUpdatesDisabled.getAsState()
+    val loadingPausedUids by prefs.bundleLoadingPaused.getAsState()
     val versionPins by prefs.bundleVersionPins.getAsState()
     // Every source, not only the enabled ones: a disabled source still answers a patch search
     // and still declares whether it carries experimental targets
@@ -323,12 +337,16 @@ private fun SourcesPageContent(
             }
         }
     }
-    val filteredSources = remember(orderedSources, sourceFilter, blockedSources, metadataFetchErrors) {
+    val filteredSources = remember(
+        orderedSources, sourceFilter, blockedSources, metadataFetchErrors, autoUpdatesDisabled, loadingPausedUids
+    ) {
         orderedSources.filter { source ->
             sourceFilter.matches(
                 source = source,
                 blocked = source.uid in blockedSources,
-                unreachable = source.uid in metadataFetchErrors
+                unreachable = source.uid in metadataFetchErrors,
+                updateOff = source.uid.toString() in autoUpdatesDisabled,
+                loadingPaused = source.uid.toString() in loadingPausedUids
             )
         }
     }
@@ -426,6 +444,10 @@ private fun SourcesPageContent(
         }
     }
 
+    fun setLoadingPaused(bundles: List<PatchBundleSource>, paused: Boolean) {
+        scope.launch { patchBundleRepository.setLoadingPaused(bundles.map { it.uid }, paused) }
+    }
+
     // Check if only default bundle exists
     val isSingleDefaultBundle = sources.size == 1
 
@@ -505,12 +527,6 @@ private fun SourcesPageContent(
                     )
                 }
                 TitleAction(
-                    icon = MaterialSymbols.Rounded.Upload_file,
-                    contentDescription = stringResource(R.string.sources_archive_import),
-                    onClick = onImportArchive,
-                    style = TitleActionStyle.Neutral
-                )
-                TitleAction(
                     icon = MaterialSymbols.RoundedFilled.Add,
                     contentDescription = stringResource(R.string.add),
                     onClick = state::openAddSource,
@@ -536,25 +552,18 @@ private fun SourcesPageContent(
                 withExperimentalVersions = withExperimentalVersions,
                 experimentalVersionsEnabled = experimentalVersionsEnabled,
                 autoUpdatesDisabled = autoUpdatesDisabled,
+                loadingPaused = loadingPausedUids,
                 onUpdate = onUpdate,
                 onToggleEnabled = onToggleEnabled,
                 onSetPrerelease = ::setPrerelease,
                 onSetExperimentalVersions = ::setExperimentalVersions,
                 onSetAutoUpdate = ::setAutoUpdate,
+                onSetLoadingPaused = ::setLoadingPaused,
                 onShare = { bundles -> bundlesToShare.value = bundles },
                 onExport = { bundles -> onExportArchive(bundles.mapTo(mutableSetOf()) { it.uid }) },
                 onSelectVersions = { bundles ->
                     versionsToSelect = bundles
                     bundleToSelectVersion = bundles.firstOrNull()
-                },
-                onPinCurrentVersions = { bundles ->
-                    scope.launch {
-                        bundles.forEach { bundle ->
-                            bundle.installedVersionSignature?.let { version ->
-                                patchBundleRepository.pinSourceVersion(bundle.uid, version)
-                            }
-                        }
-                    }
                 },
                 onDelete = { bundlesToDelete.value = it },
                 // Reorder maps list positions onto the full order, so a filtered list would move
@@ -672,8 +681,8 @@ private fun SourcesPageContent(
                                         onReportIssue = {
                                             openUrl((bundle as? RemotePatchBundle)?.issuesPageUrl ?: SOURCE_REPO_URL)
                                         },
-                                        onShare = (bundle as? RemotePatchBundle)?.addSourceLink?.let { link ->
-                                            { shareText(link) }
+                                        onShare = (bundle as? RemotePatchBundle)?.let { remote ->
+                                            { shareText(remote.browsePageUrl) }
                                         },
                                         onPrereleasesToggle = if (bundle.hasPrereleaseChannel) {
                                             { usePrerelease -> setPrerelease(listOf(bundle), usePrerelease) }
@@ -683,6 +692,10 @@ private fun SourcesPageContent(
                                         } else null,
                                         autoUpdateEnabled = bundle is RemotePatchBundle &&
                                                 bundle.uid.toString() !in autoUpdatesDisabled,
+                                        loadingPaused = bundle.uid.toString() in loadingPausedUids,
+                                        onLoadingPauseToggle = if (bundle is RemotePatchBundle) {
+                                            { paused -> setLoadingPaused(listOf(bundle), paused) }
+                                        } else null,
                                         onAutoUpdateToggle = if (bundle is RemotePatchBundle) {
                                             { enabled -> setAutoUpdate(listOf(bundle), enabled) }
                                         } else null,
@@ -758,7 +771,7 @@ private fun SourcesPageContent(
                     onPrimaryClick = {
                         bundlesToShare.value = null
                         scope.launch {
-                            runCatching { onCreateSourceShareUri(bundles, true) }
+                            runCatching { onCreateSourceShareText(bundles, true) }
                                 .onSuccess(::shareText)
                                 .onFailure { messages.show(R.string.sources_management_share_failed, it.message.orEmpty()) }
                         }
@@ -767,7 +780,7 @@ private fun SourcesPageContent(
                     onSecondaryClick = {
                         bundlesToShare.value = null
                         scope.launch {
-                            runCatching { onCreateSourceShareUri(bundles, false) }
+                            runCatching { onCreateSourceShareText(bundles, false) }
                                 .onSuccess(::shareText)
                                 .onFailure { messages.show(R.string.sources_management_share_failed, it.message.orEmpty()) }
                         }
@@ -1007,6 +1020,8 @@ private class SourceCardActions(
     val onExperimentalVersionsToggle: ((Boolean) -> Unit)?,
     val autoUpdateEnabled: Boolean,
     val onAutoUpdateToggle: ((Boolean) -> Unit)?,
+    val loadingPaused: Boolean,
+    val onLoadingPauseToggle: ((Boolean) -> Unit)?,
     val pinnedVersion: String?,
     val onSelectVersion: (() -> Unit)?,
     val onDisable: () -> Unit,
@@ -1131,7 +1146,8 @@ private fun BundleManagementCard(
 
     val isBlocked = info.blockedInfo != null
     val isEnabled = bundle.enabled && !isBlocked
-    val isUnavailable = info.metadataFetchError != null || bundle.state is PatchBundleSource.State.Missing
+    val isUnavailable = info.metadataFetchError != null ||
+            (bundle.state is PatchBundleSource.State.Missing && !actions.loadingPaused)
     val signingKeyChanged = info.metadataFetchError is PatchBundleSignerChangedException
 
     val problem = sourceProblem(bundle, isBlocked, signingKeyChanged, isUnavailable)
@@ -1221,6 +1237,8 @@ private fun BundleManagementCard(
                             selected = isSelected.takeIf { isSelectionMode },
                             dragHandleModifier = dragHandleModifier,
                             enabled = isEnabled,
+                            autoUpdateEnabled = actions.autoUpdateEnabled,
+                            loadingPaused = actions.loadingPaused,
                             metadataFetchError = info.metadataFetchError,
                             problem = problem,
                             blockedInfo = info.blockedInfo,
@@ -1448,7 +1466,7 @@ private fun BundleManagementCard(
                             SettingsDivider(fullWidth = true)
 
                             if (actions.onPrereleasesToggle != null || actions.onExperimentalVersionsToggle != null ||
-                                actions.onAutoUpdateToggle != null || actions.onSelectVersion != null
+                                actions.onSelectVersion != null
                             ) {
                                 // Grouped apart from the card's spaced column, so the experimental toggle
                                 // brings its gap along as it folds in rather than the column opening it at once
@@ -1481,21 +1499,6 @@ private fun BundleManagementCard(
                                         )
                                     }
 
-                                    ListRowFold(visible = actions.onAutoUpdateToggle != null) {
-                                        ToggleRow(
-                                            title = stringResource(R.string.sources_management_auto_update),
-                                            description = stringResource(R.string.sources_management_auto_update_description),
-                                            checked = actions.autoUpdateEnabled,
-                                            onCheckedChange = { actions.onAutoUpdateToggle?.invoke(it) },
-                                            modifier = Modifier.padding(
-                                                top = if (actions.onPrereleasesToggle != null || actions.onExperimentalVersionsToggle != null) {
-                                                    Defaults.SpaceSmall
-                                                } else 0.dp
-                                            ),
-                                            showDivider = false
-                                        )
-                                    }
-
                                     ListRowFold(visible = actions.onSelectVersion != null) {
                                         SettingsItem(
                                             onClick = { actions.onSelectVersion?.invoke() },
@@ -1509,7 +1512,7 @@ private fun BundleManagementCard(
                                             modifier = Modifier.padding(
                                                 top = if (actions.onPrereleasesToggle != null ||
                                                     actions.onExperimentalVersionsToggle != null ||
-                                                    actions.onAutoUpdateToggle != null
+                                                    actions.onLoadingPauseToggle != null
                                                 ) Defaults.SpaceSmall else 0.dp
                                             )
                                         )
@@ -1556,6 +1559,35 @@ private fun BundleManagementCard(
                                         tooltip = updateVerb,
                                         confirmation = updateStarted.takeUnless { isLocal },
                                         enabled = !isBlocked
+                                    )
+                                }
+
+                                if (actions.onAutoUpdateToggle != null) {
+                                    val autoUpdateVerb = stringResource(
+                                        if (actions.autoUpdateEnabled) R.string.sources_management_auto_update_disable
+                                        else R.string.sources_management_auto_update_enable
+                                    )
+                                    ActionPillButton(
+                                        onClick = { actions.onAutoUpdateToggle.invoke(!actions.autoUpdateEnabled) },
+                                        icon = MaterialSymbols.Rounded.Update,
+                                        contentDescription = "$autoUpdateVerb ${bundle.displayTitle}",
+                                        tooltip = autoUpdateVerb,
+                                        label = autoUpdateVerb
+                                    )
+                                }
+
+                                if (actions.onLoadingPauseToggle != null) {
+                                    val loadingVerb = stringResource(
+                                        if (actions.loadingPaused) R.string.npmorphe_source_resume_loading_action
+                                        else R.string.npmorphe_source_loading_pause_action
+                                    )
+                                    ActionPillButton(
+                                        onClick = { actions.onLoadingPauseToggle.invoke(!actions.loadingPaused) },
+                                        icon = if (actions.loadingPaused) MaterialSymbols.Rounded.Play_arrow
+                                            else MaterialSymbols.Rounded.Pause,
+                                        contentDescription = "$loadingVerb ${bundle.displayTitle}",
+                                        tooltip = loadingVerb,
+                                        label = loadingVerb
                                     )
                                 }
 
@@ -1608,6 +1640,8 @@ private fun BundleCardHeader(
     selected: Boolean? = null,
     // Set while reordering, which puts the drag handle where the chevron sits
     dragHandleModifier: Modifier? = null,
+    autoUpdateEnabled: Boolean = true,
+    loadingPaused: Boolean = false,
 ) {
     // Version • date
     // When showChevron=false (single bundle): show only date, no version.
@@ -1726,6 +1760,22 @@ private fun BundleCardHeader(
                         containerColor = cardStyle.chipContainerColor,
                         contentColor = cardStyle.chipContentColor,
                         onClick = onShowSearchMatches
+                    )
+                }
+                if (bundle is RemotePatchBundle && !autoUpdateEnabled) {
+                    StatusBadge(
+                        text = stringResource(R.string.npmorphe_source_update_off_badge),
+                        icon = MaterialSymbols.Rounded.Update,
+                        containerColor = cardStyle.chipContainerColor,
+                        contentColor = cardStyle.chipContentColor
+                    )
+                }
+                if (bundle is RemotePatchBundle && loadingPaused) {
+                    StatusBadge(
+                        text = stringResource(R.string.npmorphe_source_loading_paused_badge),
+                        icon = MaterialSymbols.Rounded.Pause,
+                        containerColor = cardStyle.chipContainerColor,
+                        contentColor = cardStyle.chipContentColor
                     )
                 }
                 // Report the actual downloaded patch bundle size, not the repository's

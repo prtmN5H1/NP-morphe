@@ -15,7 +15,9 @@ private const val TAG = "Morphe FcmTopicSync"
 
 /** Whether Google Play services can deliver FCM here, which otherwise leaves update checks to WorkManager. */
 fun Context.hasGooglePlayServices(): Boolean =
-    GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(this) == ConnectionResult.SUCCESS
+    runCatching {
+        GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(this) == ConnectionResult.SUCCESS
+    }.getOrDefault(false)
 
 /**
  * FCM topic strings used for update push notifications.
@@ -64,7 +66,11 @@ fun syncFcmTopics(
     useManagerPrereleases: Boolean,
     usePatchesPrereleases: Boolean = false,
 ) {
-    val messaging = FirebaseMessaging.getInstance()
+    // The app can still use its WorkManager update checks if Firebase setup or Play services is
+    // unavailable (for example, on a device without GMS or with a fork-specific Firebase config).
+    val messaging = runCatching { FirebaseMessaging.getInstance() }
+        .onFailure { Log.w(TAG, "FCM is unavailable; keeping background update checks enabled", it) }
+        .getOrNull() ?: return
 
     if (!notificationsEnabled) {
         FcmTopics.all.forEach { topic ->

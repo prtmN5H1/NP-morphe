@@ -67,6 +67,11 @@ enum class SettingsSubpage(
         MaterialSymbols.Rounded.Download,
         searchable = false
     ),
+    NPMORPHE(
+        R.string.npmorphe_settings_title,
+        R.string.npmorphe_settings_summary,
+        MaterialSymbols.Rounded.Tune
+    ),
     ABOUT(
         R.string.settings_section_help_info,
         R.string.settings_section_about_summary,

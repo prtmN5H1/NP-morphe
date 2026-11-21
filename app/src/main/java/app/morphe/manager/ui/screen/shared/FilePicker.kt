@@ -84,6 +84,8 @@ private val MIME_EXTENSION_MAP: Map<String, Set<String>> = mapOf(
     TEXT_MIMETYPE to setOf("txt", "log"),
     MPP_MIMETYPE to setOf(MPP_EXTENSION), // Morphe patch bundle format
     SOURCE_ARCHIVE_MIMETYPE to setOf(SOURCE_ARCHIVE_EXTENSION), // Morphe source archive
+    "application/zip" to setOf("zip"),
+    "application/x-zip-compressed" to setOf("zip"),
     KEYSTORE_MIMETYPE to setOf("p12", "pfx"),
     JKS_MIMETYPE to setOf("jks"),
     BKS_MIMETYPE to setOf("keystore", "bks"),

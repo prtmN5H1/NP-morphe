@@ -80,6 +80,7 @@ fun SettingsPage(
                     PatchingSection(settingsViewModel, navigation, onboardingState)
                     UpdatesSection(settingsViewModel, homeViewModel)
                     FilesSection(settingsViewModel, onboardingState, navigation.openSubpage)
+                    NpmorpheSection(navigation.openSubpage)
                     AboutGroup(navigation.openSubpage)
                     if (settingsSearch.isActive) SubpageMatches(homeViewModel, settingsViewModel, navigation)
                     AnimatedVisibility(
@@ -101,6 +102,19 @@ fun SettingsPage(
             modifier = Modifier.padding(insets.scrollbarPadding(bottom = bottomBarHeight))
         )
         ScrollToTopButton(scrollState = scrollState, extraBottomPadding = bottomBarHeight)
+    }
+}
+
+/** Fork-specific controls stay together, separate from the upstream About and Help sections. */
+@Composable
+private fun NpmorpheSection(onOpenSubpage: (SettingsSubpage) -> Unit) {
+    SettingsSection(
+        title = stringResource(R.string.npmorphe_settings_title),
+        icon = MaterialSymbols.Rounded.Tune
+    ) {
+        SettingsGroup {
+            SubpageItem(SettingsSubpage.NPMORPHE, onOpenSubpage)
+        }
     }
 }
 

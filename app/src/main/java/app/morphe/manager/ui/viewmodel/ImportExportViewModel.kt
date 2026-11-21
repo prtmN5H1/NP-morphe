@@ -493,20 +493,13 @@ class ImportExportViewModel(
         }
     }
 
-    /** A single in-app deep link carrying several source snapshots for the Android share sheet. */
-    suspend fun createSourceShareUri(uids: Set<Int>, pinInstalledVersions: Boolean): String {
+    /** Newline-separated browser-facing source URLs for the Android share sheet. */
+    suspend fun createSourceShareText(uids: Set<Int>, pinInstalledVersions: Boolean): String {
         val sources = withContext(Dispatchers.IO) {
-            patchBundleRepository.exportSourcesForShare(uids, pinInstalledVersions)
+            patchBundleRepository.sourceShareUrls(uids, pinInstalledVersions)
         }
         require(sources.isNotEmpty()) { "No remote sources to share" }
-        val payload = Base64.encodeToString(
-            json.encodeToString(SourceArchiveFile(sources = sources)).toByteArray(Charsets.UTF_8),
-            Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING
-        )
-        require(payload.length <= MAX_SOURCE_SHARE_PAYLOAD_CHARS) {
-            "This source selection is too large for one share link. Export it as a source archive instead."
-        }
-        return "morphe://sources/import?payload=$payload"
+        return sources.joinToString(separator = "\n")
     }
 
     /** Imports the encoded payload from a shared Morphe source link. */

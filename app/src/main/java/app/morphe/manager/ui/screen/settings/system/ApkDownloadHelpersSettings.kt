@@ -5,25 +5,15 @@
 
 package app.morphe.manager.ui.screen.settings.system
 
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.RadioButton
-import androidx.compose.material3.Text
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.morphe.manager.R
-import app.morphe.manager.domain.manager.ApkBrowserPreference
 import app.morphe.manager.ui.screen.settings.SettingsSubpage
 import app.morphe.manager.ui.screen.shared.*
 import app.morphe.manager.ui.viewmodel.ApkDownloadHelperApp
@@ -33,7 +23,6 @@ import app.morphe.manager.util.withVersionPrefix
 import com.composables.icons.materialsymbols.MaterialSymbols
 import com.composables.icons.materialsymbols.rounded.*
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.koin.androidx.compose.koinViewModel
 import org.koin.compose.koinInject
@@ -61,19 +50,10 @@ fun ApkDownloadHelpersSettings(
 ) {
     val helpers = rememberApkDownloadHelpers(settingsViewModel)
     var pendingTrust by remember { mutableStateOf<ApkDownloadHelperApp?>(null) }
-    var showBrowserPreference by rememberSaveable { mutableStateOf(false) }
     val trustedPackages by settingsViewModel.prefs.trustedApkDownloadHelpers.getAsState()
     val openDirectly by settingsViewModel.prefs.openApkDownloadHelperDirectly.getAsState()
-    val browserPreference by settingsViewModel.prefs.apkBrowserPreference.getAsState()
-    val scope = rememberCoroutineScope()
     val autoInBatch by settingsViewModel.prefs.autoDownloadApkHelpersInBatch.getAsState()
     val unknownInstaller = stringResource(R.string.settings_system_apk_download_helper_installed_by_unknown)
-
-    val browserPreferenceLabel = when (browserPreference) {
-        ApkBrowserPreference.ASK -> stringResource(R.string.settings_system_apk_browser_ask)
-        ApkBrowserPreference.IN_APP -> stringResource(R.string.settings_system_apk_browser_in_app)
-        ApkBrowserPreference.EXTERNAL -> stringResource(R.string.settings_system_apk_browser_external)
-    }
 
     // Version and install source are what tell two helpers apart, so they are worth a PackageManager round trip
     var details by remember { mutableStateOf(emptyMap<String, HelperDetails>()) }
@@ -110,54 +90,7 @@ fun ApkDownloadHelpersSettings(
         )
     }
 
-    DialogHost(visible = showBrowserPreference) {
-        AppDialog(
-            onDismissRequest = { showBrowserPreference = false },
-            title = stringResource(R.string.settings_system_apk_browser_preference),
-            description = stringResource(R.string.settings_system_apk_browser_preference_description),
-            footer = {
-                AppDialogButtonRow(
-                    primaryText = stringResource(R.string.close),
-                    onPrimaryClick = { showBrowserPreference = false }
-                )
-            }
-        ) {
-            Column(verticalArrangement = Arrangement.spacedBy(Defaults.SpaceSmall)) {
-                ApkBrowserPreference.entries.forEach { preference ->
-                    val label = when (preference) {
-                        ApkBrowserPreference.ASK -> stringResource(R.string.settings_system_apk_browser_ask)
-                        ApkBrowserPreference.IN_APP -> stringResource(R.string.settings_system_apk_browser_in_app)
-                        ApkBrowserPreference.EXTERNAL -> stringResource(R.string.settings_system_apk_browser_external)
-                    }
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                scope.launch { settingsViewModel.prefs.apkBrowserPreference.update(preference) }
-                                showBrowserPreference = false
-                            }
-                            .padding(vertical = Defaults.SpaceSmall),
-                        horizontalArrangement = Arrangement.spacedBy(Defaults.SpaceMedium),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        RadioButton(selected = browserPreference == preference, onClick = null)
-                        Text(text = label, style = MaterialTheme.typography.bodyLarge)
-                    }
-                }
-            }
-        }
-    }
-
     SettingsColumn {
-        SettingsGroup {
-            SettingsItem(
-                onClick = { showBrowserPreference = true },
-                icon = MaterialSymbols.Rounded.Language,
-                title = stringResource(R.string.settings_system_apk_browser_preference),
-                subtitle = browserPreferenceLabel
-            )
-        }
-
         SettingsGroup {
             helpers.forEach { helper ->
                 val trusted = helper.packageName in trustedPackages

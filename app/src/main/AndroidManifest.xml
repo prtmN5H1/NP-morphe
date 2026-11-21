@@ -257,6 +257,9 @@
         <meta-data
             android:name="firebase_analytics_collection_enabled"
             android:value="false" />
+        <meta-data
+            android:name="firebase_crashlytics_collection_enabled"
+            android:value="false" />
 
         <!-- Told by a mount module at boot that the mounted app was replaced -->
         <receiver

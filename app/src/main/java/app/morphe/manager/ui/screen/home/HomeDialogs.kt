@@ -301,6 +301,9 @@ private fun DialogHostScope.PatchFlowDialog(
             DialogHost(target = inAppBrowserUrl) { url ->
                 ApkDownloadBrowserDialog(
                     initialUrl = url,
+                    appName = session.appName,
+                    packageName = session.packageName,
+                    requestedVersion = session.requestedVersion,
                     onDismiss = { inAppBrowserUrl = null },
                     onApkDownloaded = { uri, downloadUrl, downloadId, permanent ->
                         inAppBrowserUrl = null
