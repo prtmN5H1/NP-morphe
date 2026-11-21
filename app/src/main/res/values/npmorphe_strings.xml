@@ -78,7 +78,7 @@
     <string name="patch_history_app_enabled_description">The global history setting in Settings can still pause recording.</string>
     <string name="patch_history_base_apk">Base APK</string>
     <string name="patch_history_clear_all">Clear all history</string>
-    <string name="patch_history_clear_app">Clear this app&apos;s history</string>
+    <string name="patch_history_clear_app">Clear this app\'s history</string>
     <string name="patch_history_clear_app_confirm">This removes the saved patch and install history for this app.</string>
     <string name="patch_history_clear_confirm">This removes the saved patch and install history from this device.</string>
     <string name="patch_history_description">Completed patch builds and confirmed installs</string>
