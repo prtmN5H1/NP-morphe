@@ -99,6 +99,10 @@ fun SourcesPage(
 ) {
     val scope = rememberCoroutineScope()
     val repository = homeViewModel.patchBundleRepository
+    val installedSources by repository.sources.collectAsStateWithLifecycle()
+    val installedRemoteSourceUrls = remember(installedSources) {
+        installedSources.filterIsInstance<RemotePatchBundle>().map { it.endpoint }
+    }
     val importExportViewModel: ImportExportViewModel = koinViewModel()
     val pendingArchiveExportUids = remember { mutableStateOf<Set<Int>?>(null) }
     val context = LocalContext.current
@@ -173,6 +177,7 @@ fun SourcesPage(
                 onRemoveFile = homeViewModel::unpickBundle,
                 localFiles = homeViewModel.pickedBundleImports,
                 onCheckUrl = repository::checkRemoteUrl,
+                installedSourceUrls = installedRemoteSourceUrls,
                 modifier = Modifier.fillMaxWidth()
             )
         },

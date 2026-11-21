@@ -104,6 +104,9 @@ class ManagerApplication : Application() {
     override fun onCreate() {
         super.onCreate()
 
+        CrashLogManager.install(this)
+        CrashLogManager.record("NPmorphe process started: ${currentProcessName()}")
+
         // The patcher process only hosts the run, none of the app is of use to it
         if (currentProcessName() != packageName) return
 

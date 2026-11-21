@@ -9,8 +9,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -67,13 +68,16 @@ internal fun PatchHistoryContent(
     }
 
     val timeFormatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
-    Column(
+    LazyColumn(
         modifier = modifier
             .fillMaxWidth()
-            .verticalScroll(rememberScrollState()),
+            .heightIn(max = 560.dp),
         verticalArrangement = Arrangement.spacedBy(Defaults.SpaceSmall)
     ) {
-        entries.sortedByDescending { it.patchCompletedAtMillis }.forEach { entry ->
+        val sortedEntries = entries.sortedByDescending { it.patchCompletedAtMillis }
+        itemsIndexed(sortedEntries, key = { index, entry -> "${entry.id}-$index" }) { _, entry ->
+            val patchedAt = runCatching { timeFormatter.format(Date(entry.patchCompletedAtMillis)) }
+                .getOrElse { entry.patchCompletedAtMillis.toString() }
             SurfaceCard(
                 cornerRadius = Defaults.CornerLarge,
                 showBorder = true,
@@ -83,43 +87,39 @@ internal fun PatchHistoryContent(
                     modifier = Modifier.padding(Defaults.SpaceMedium),
                     verticalArrangement = Arrangement.spacedBy(Defaults.SpaceExtraSmall)
                 ) {
-                    Text(entry.appName, style = MaterialTheme.typography.titleMedium)
-                    HistoryLine(stringResource(R.string.package_name), entry.packageName)
+                    Text(entry.appName.ifBlank { entry.packageName }, style = MaterialTheme.typography.titleMedium)
+                    HistoryLine(stringResource(R.string.package_name), entry.packageName.ifBlank { "unknown" })
                     HistoryLine(
                         stringResource(R.string.patch_history_base_apk),
-                        listOfNotNull(entry.baseFileName, entry.baseVersionName, entry.baseVersionCode?.toString())
-                            .joinToString(" · ")
+                        listOfNotNull(entry.baseFileName.takeIf(String::isNotBlank), entry.baseVersionName, entry.baseVersionCode?.toString())
+                            .joinToString(" · ").ifBlank { "unknown" }
                     )
-                    entry.downloadSourceUrl?.let {
+                    entry.downloadSourceUrl?.takeIf(String::isNotBlank)?.let {
                         HistoryLine(stringResource(R.string.patch_history_download_source), it)
                     }
-                    if (entry.patchSources.isNotEmpty()) {
-                        HistoryLine(stringResource(R.string.patch_history_sources), entry.patchSources.joinToString())
+                    entry.patchSources.filter(String::isNotBlank).takeIf { it.isNotEmpty() }?.let {
+                        HistoryLine(stringResource(R.string.patch_history_sources), it.joinToString())
                     }
-                    if (entry.appliedPatches.isNotEmpty()) {
-                        HistoryLine(stringResource(R.string.patch_history_patches), entry.appliedPatches.joinToString())
+                    entry.appliedPatches.filter(String::isNotBlank).takeIf { it.isNotEmpty() }?.let {
+                        HistoryLine(stringResource(R.string.patch_history_patches), it.joinToString())
                     }
-                    if (entry.libraries.isNotEmpty()) {
-                        HistoryLine(stringResource(R.string.patch_history_libraries), entry.libraries.joinToString())
+                    entry.libraries.filter(String::isNotBlank).takeIf { it.isNotEmpty() }?.let {
+                        HistoryLine(stringResource(R.string.patch_history_libraries), it.joinToString())
                     }
                     HistoryLine(
                         stringResource(R.string.patch_history_manager_version),
-                        "${entry.managerVersion} · ${entry.patcherVersion}"
+                        listOf(entry.managerVersion, entry.patcherVersion).filter(String::isNotBlank).joinToString(" · ").ifBlank { "unknown" }
                     )
                     HistoryLine(
                         stringResource(R.string.patch_history_output_version),
                         listOfNotNull(entry.outputVersionName, entry.outputVersionCode?.toString())
                             .joinToString(" · ").ifBlank { "unknown" }
                     )
-                    HistoryLine(
-                        stringResource(R.string.patch_history_patched_at),
-                        timeFormatter.format(Date(entry.patchCompletedAtMillis))
-                    )
+                    HistoryLine(stringResource(R.string.patch_history_patched_at), patchedAt)
                     entry.installConfirmedAtMillis?.let { installedAt ->
-                        HistoryLine(
-                            stringResource(R.string.patch_history_installed_at),
-                            timeFormatter.format(Date(installedAt))
-                        )
+                        val installedAtText = runCatching { timeFormatter.format(Date(installedAt)) }
+                            .getOrElse { installedAt.toString() }
+                        HistoryLine(stringResource(R.string.patch_history_installed_at), installedAtText)
                     }
                     entry.previousVersionName?.let { previous ->
                         HistoryLine(

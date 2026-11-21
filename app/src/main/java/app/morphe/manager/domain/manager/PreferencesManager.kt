@@ -50,6 +50,8 @@ enum class SettingsSection {
     PATCH_SELECTIONS
 }
 
+const val APK_BROWSER_APP_DEFAULT_URL_SEPARATOR = '\u001f'
+
 class PreferencesManager(
     private val context: Context
 ) : BasePreferencesManager(context, "settings") {
@@ -234,6 +236,9 @@ class PreferencesManager(
 
     /** User-selected default site opened by the in-app APK browser; blank uses APKMirror. */
     val apkBrowserDefaultUrl = stringPreference("apk_browser_default_url", "")
+
+    /** Per-app browser start pages, stored as package-name/unit-separator/URL records. */
+    val apkBrowserAppDefaultUrls = stringSetPreference("apk_browser_app_default_urls", emptySet())
 
     /** Whether a batch queue asks the trusted helper for APKs that are missing or behind on its own. */
     val autoDownloadApkHelpersInBatch = booleanPreference("auto_download_apk_helpers_in_batch", false)

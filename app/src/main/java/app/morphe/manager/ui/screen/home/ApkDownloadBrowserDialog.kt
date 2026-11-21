@@ -6,9 +6,11 @@
 package app.morphe.manager.ui.screen.home
 
 import android.Manifest
+import android.app.Activity
 import android.app.DownloadManager
 import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
@@ -21,6 +23,7 @@ import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.view.ViewGroup
 import android.webkit.URLUtil
 import android.util.Log
 import androidx.activity.compose.BackHandler
@@ -28,6 +31,10 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -38,6 +45,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -54,22 +63,18 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import app.morphe.manager.R
+import app.morphe.manager.domain.manager.APK_BROWSER_APP_DEFAULT_URL_SEPARATOR
 import app.morphe.manager.domain.manager.PreferencesManager
-import app.morphe.manager.ui.screen.shared.DialogAction
-import app.morphe.manager.ui.screen.shared.DialogActionEmphasis
 import app.morphe.manager.ui.screen.shared.DialogHostScope
-import app.morphe.manager.ui.screen.shared.ListDialog
-import app.morphe.manager.ui.screen.shared.ListDialogHeader
-import app.morphe.manager.ui.screen.shared.ListDialogHeaderIcon
-import app.morphe.manager.ui.screen.shared.LocalDialogBarInsets
-import app.morphe.manager.ui.screen.shared.SettingsItem
-import app.morphe.manager.ui.screen.shared.SettingsSwitchItem
-import app.morphe.manager.ui.screen.shared.TitleAction
 import app.morphe.manager.ui.screen.shared.UserMessages
 import app.morphe.manager.util.APK_MIMETYPE
 import app.morphe.manager.util.APK_BROWSER_DEFAULT_URL
@@ -99,22 +104,31 @@ internal fun DialogHostScope.ApkDownloadBrowserDialog(
     val currentOnApkDownloaded by rememberUpdatedState(onApkDownloaded)
     val downloadPermissionDenied = stringResource(R.string.home_apk_browser_storage_permission_denied)
     val browserDefaultUrl by prefs.apkBrowserDefaultUrl.getAsState()
+    val appDefaultUrlRecords by prefs.apkBrowserAppDefaultUrls.getAsState()
+    val appDefaultUrl = remember(appDefaultUrlRecords, packageName) {
+        packageName?.let { packageId ->
+            appDefaultUrlRecords.firstNotNullOfOrNull { record ->
+                val split = record.indexOf(APK_BROWSER_APP_DEFAULT_URL_SEPARATOR)
+                if (split > 0 && record.substring(0, split) == packageId) record.substring(split + 1) else null
+            }
+        }
+    }
     var webView by remember { mutableStateOf<WebView?>(null) }
     val builtInDefaultUrl = remember(appName, packageName, requestedVersion) {
         expandApkBrowserTemplate(APK_BROWSER_DEFAULT_URL, appName, packageName, requestedVersion)
     }
-    val configuredStartUrl = remember(initialUrl, browserDefaultUrl, builtInDefaultUrl) {
-        browserDefaultUrl.takeIf(String::isNotBlank)
+    val configuredStartUrl = remember(initialUrl, browserDefaultUrl, appDefaultUrl, builtInDefaultUrl) {
+        (appDefaultUrl ?: browserDefaultUrl).takeIf(String::isNotBlank)
             ?.let { normalizeApkBrowserAddress(expandApkBrowserTemplate(it, appName, packageName, requestedVersion)) }
             ?: initialUrl.takeIf { Uri.parse(it).host.orEmpty().endsWith("apkmirror.com", ignoreCase = true) }
+                ?.let { normalizeApkBrowserAddress(expandApkBrowserTemplate(it, appName, packageName, requestedVersion)) }
             ?: builtInDefaultUrl
     }
     var currentUrl by remember(configuredStartUrl) { mutableStateOf(configuredStartUrl) }
     var addressText by remember(configuredStartUrl) { mutableStateOf(configuredStartUrl) }
-    var pageTitle by remember { mutableStateOf<String?>(null) }
     var pageProgress by remember { mutableIntStateOf(0) }
     var navigationRevision by remember { mutableIntStateOf(0) }
-    var savePermanently by remember { mutableStateOf(false) }
+    var savePermanently by remember(packageName) { mutableStateOf(packageName.isNullOrBlank()) }
     var downloading by remember { mutableStateOf(false) }
     var waitingForStoragePermission by remember { mutableStateOf(false) }
     val pendingDownloads = remember { mutableMapOf<Long, PendingBrowserDownload>() }
@@ -126,13 +140,6 @@ internal fun DialogHostScope.ApkDownloadBrowserDialog(
         currentUrl = destination
         keyboardController?.hide()
         webView?.loadUrl(destination)
-    }
-
-    fun resetBrowserDefault() {
-        scope.launch { prefs.apkBrowserDefaultUrl.update("") }
-        addressText = builtInDefaultUrl
-        currentUrl = builtInDefaultUrl
-        webView?.loadUrl(builtInDefaultUrl)
     }
 
     val canNavigateBack = remember(webView, navigationRevision) { webView?.canGoBack() == true }
@@ -295,156 +302,145 @@ internal fun DialogHostScope.ApkDownloadBrowserDialog(
         }
     }
 
-    ListDialog(
-        onDismissRequest = onDismiss,
-        accentColor = null,
-        header = {
-            ListDialogHeader(
-                icon = { modifier ->
-                    ListDialogHeaderIcon(
-                        MaterialSymbols.Rounded.Language,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = modifier
-                    )
-                },
-                title = pageTitle?.takeIf(String::isNotBlank) ?: stringResource(R.string.home_apk_browser_title),
-                subtitle = Uri.parse(currentUrl).host.orEmpty(),
-                alwaysShowBand = true,
-                actions = {
-                    TitleAction(
-                        icon = MaterialSymbols.Rounded.Arrow_back,
-                        contentDescription = stringResource(R.string.back),
-                        onClick = { if (webView?.canGoBack() == true) webView?.goBack() else dismissBrowser() }
-                    )
-                    TitleAction(
-                        icon = MaterialSymbols.Rounded.Arrow_forward,
-                        contentDescription = stringResource(R.string.npmorphe_apk_browser_forward),
-                        onClick = { webView?.goForward() },
-                        enabled = canNavigateForward
-                    )
-                    TitleAction(
-                        icon = MaterialSymbols.Rounded.Refresh,
-                        contentDescription = stringResource(R.string.refresh),
-                        onClick = { webView?.reload() }
-                    )
-                    TitleAction(
-                        icon = MaterialSymbols.Rounded.Close,
-                        contentDescription = stringResource(R.string.close),
-                        onClick = ::dismissBrowser
-                    )
-                },
-                content = {
-                    Row(modifier = Modifier.fillMaxWidth()) {
-                        OutlinedTextField(
-                            value = addressText,
-                            onValueChange = { addressText = it },
-                            modifier = Modifier.weight(1f),
-                            singleLine = true,
-                            label = { androidx.compose.material3.Text(stringResource(R.string.npmorphe_apk_browser_address)) },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
-                            keyboardActions = KeyboardActions(onGo = { navigateToAddress(addressText) })
-                        )
-                        IconButton(onClick = { navigateToAddress(addressText) }) {
-                            Icon(MaterialSymbols.Rounded.Search, contentDescription = stringResource(R.string.npmorphe_apk_browser_go))
-                        }
+    Dialog(
+        onDismissRequest = ::dismissBrowser,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(0.dp)
+                ) {
+                    IconButton(onClick = { if (webView?.canGoBack() == true) webView?.goBack() else dismissBrowser() }) {
+                        Icon(MaterialSymbols.Rounded.Arrow_back, contentDescription = stringResource(R.string.back))
                     }
-                    SettingsItem(
+                    IconButton(onClick = { webView?.goForward() }, enabled = canNavigateForward) {
+                        Icon(MaterialSymbols.Rounded.Arrow_forward, contentDescription = stringResource(R.string.npmorphe_apk_browser_forward))
+                    }
+                    IconButton(onClick = { webView?.reload() }) {
+                        Icon(MaterialSymbols.Rounded.Refresh, contentDescription = stringResource(R.string.refresh))
+                    }
+                    OutlinedTextField(
+                        value = addressText,
+                        onValueChange = { addressText = it },
+                        modifier = Modifier.weight(1f).height(56.dp),
+                        singleLine = true,
+                        placeholder = { Text(stringResource(R.string.npmorphe_apk_browser_address)) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
+                        keyboardActions = KeyboardActions(onGo = { navigateToAddress(addressText) })
+                    )
+                    IconButton(
                         onClick = {
-                            scope.launch { prefs.apkBrowserDefaultUrl.update(currentUrl) }
+                            scope.launch {
+                                if (packageName.isNullOrBlank()) {
+                                    prefs.apkBrowserDefaultUrl.update(currentUrl)
+                                } else {
+                                    val prefix = packageName + APK_BROWSER_APP_DEFAULT_URL_SEPARATOR
+                                    val current = prefs.apkBrowserAppDefaultUrls.get()
+                                    prefs.apkBrowserAppDefaultUrls.update(
+                                        current.filterNot { it.startsWith(prefix) } + "$prefix$currentUrl"
+                                    )
+                                }
+                            }
                             messages.show(R.string.home_apk_browser_default_saved)
                         },
-                        icon = MaterialSymbols.Rounded.Bookmark,
-                        title = stringResource(R.string.home_apk_browser_set_default),
-                        subtitle = currentUrl
-                    )
-                    SettingsItem(
-                        onClick = ::resetBrowserDefault,
-                        icon = MaterialSymbols.Rounded.Refresh,
-                        title = stringResource(R.string.home_apk_browser_reset_default),
-                        subtitle = stringResource(R.string.home_apk_browser_reset_default_description)
-                    )
-                    SettingsSwitchItem(
-                        checked = savePermanently,
-                        onToggle = { savePermanently = !savePermanently },
-                        icon = MaterialSymbols.Rounded.Save,
-                        title = stringResource(R.string.home_apk_browser_save_permanently),
-                        subtitle = stringResource(R.string.home_apk_browser_save_permanently_description)
-                    )
-                    if (pageProgress in 1..99) {
-                        LinearProgressIndicator(
-                            progress = { pageProgress / 100f },
-                            modifier = Modifier.fillMaxWidth()
+                        enabled = currentUrl.startsWith("http://") || currentUrl.startsWith("https://")
+                    ) {
+                        Icon(MaterialSymbols.Rounded.Bookmark, contentDescription = stringResource(R.string.home_apk_browser_set_default))
+                    }
+                    IconButton(onClick = { savePermanently = !savePermanently }, enabled = !packageName.isNullOrBlank()) {
+                        Icon(
+                            MaterialSymbols.Rounded.Save,
+                            contentDescription = stringResource(R.string.home_apk_browser_save_permanently),
+                            tint = if (savePermanently) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    if (waitingForStoragePermission) {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    IconButton(onClick = ::dismissBrowser) {
+                        Icon(MaterialSymbols.Rounded.Close, contentDescription = stringResource(R.string.close))
                     }
                 }
-            )
-        },
-        footer = null,
-        content = {
-            AndroidView(
-                modifier = Modifier
-                    .padding(LocalDialogBarInsets.current)
-                    .fillMaxSize(),
-                factory = { viewContext ->
-                    WebView(viewContext).apply {
-                        webView = this
-                        settings.javaScriptEnabled = true
-                        settings.domStorageEnabled = true
-                        settings.loadsImagesAutomatically = true
-                        settings.javaScriptCanOpenWindowsAutomatically = true
-                        settings.setSupportMultipleWindows(false)
-                        settings.allowFileAccess = false
-                        settings.allowContentAccess = false
-                        settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
-                        CookieManager.getInstance().setAcceptCookie(true)
-                        CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
-                        webViewClient = object : WebViewClient() {
-                            override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
-                                super.onPageStarted(view, url, favicon)
-                                currentUrl = url
-                                addressText = url
-                                navigationRevision++
-                            }
-
-                            override fun shouldOverrideUrlLoading(
-                                view: WebView,
-                                request: WebResourceRequest
-                            ): Boolean {
-                                val scheme = request.url.scheme?.lowercase(Locale.ROOT)
-                                if (scheme == "http" || scheme == "https") return false
-                                return runCatching {
-                                    view.context.startActivity(Intent(Intent.ACTION_VIEW, request.url))
-                                    true
-                                }.getOrDefault(false)
-                            }
-                        }
-                        webChromeClient = object : WebChromeClient() {
-                            override fun onProgressChanged(view: WebView, newProgress: Int) {
-                                pageProgress = newProgress
-                            }
-
-                            override fun onReceivedTitle(view: WebView, title: String?) {
-                                pageTitle = title
-                            }
-                        }
-                        setDownloadListener(DownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
-                            startDownload(
-                                url = url,
-                                userAgent = userAgent,
-                                contentDisposition = contentDisposition,
-                                mimeType = mimeType,
-                                referer = currentUrl,
-                            )
-                        })
-                        loadUrl(configuredStartUrl)
-                    }
+                when {
+                    pageProgress in 1..99 -> LinearProgressIndicator(
+                        progress = { pageProgress / 100f }, modifier = Modifier.fillMaxWidth()
+                    )
+                    waitingForStoragePermission -> LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 }
-            )
+                Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                    AndroidView(
+                        modifier = Modifier.fillMaxSize(),
+                        factory = { viewContext ->
+                            val activityContext = viewContext.findActivityContext()
+                            WebView(activityContext).apply {
+                                layoutParams = ViewGroup.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                    ViewGroup.LayoutParams.MATCH_PARENT
+                                )
+                                webView = this
+                                settings.javaScriptEnabled = true
+                                settings.domStorageEnabled = true
+                                settings.databaseEnabled = true
+                                settings.loadsImagesAutomatically = true
+                                settings.javaScriptCanOpenWindowsAutomatically = true
+                                settings.setSupportMultipleWindows(false)
+                                settings.allowFileAccess = false
+                                settings.allowContentAccess = false
+                                settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                                settings.userAgentString = settings.userAgentString
+                                    .replace("; wv", "", ignoreCase = true)
+                                    .replace("Version/4.0 ", "", ignoreCase = true)
+                                CookieManager.getInstance().setAcceptCookie(true)
+                                CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                                webViewClient = object : WebViewClient() {
+                                    override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+                                        super.onPageStarted(view, url, favicon)
+                                        currentUrl = url
+                                        addressText = url
+                                        navigationRevision++
+                                    }
+
+                                    override fun shouldOverrideUrlLoading(
+                                        view: WebView,
+                                        request: WebResourceRequest
+                                    ): Boolean {
+                                        val scheme = request.url.scheme?.lowercase(Locale.ROOT)
+                                        if (scheme == "http" || scheme == "https") return false
+                                        return runCatching {
+                                            view.context.startActivity(Intent(Intent.ACTION_VIEW, request.url))
+                                            true
+                                        }.getOrDefault(false)
+                                    }
+                                }
+                                webChromeClient = object : WebChromeClient() {
+                                    override fun onProgressChanged(view: WebView, newProgress: Int) {
+                                        pageProgress = newProgress
+                                    }
+
+                                }
+                                setDownloadListener(DownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
+                                    startDownload(
+                                        url = url,
+                                        userAgent = userAgent,
+                                        contentDisposition = contentDisposition,
+                                        mimeType = mimeType,
+                                        referer = currentUrl,
+                                    )
+                                })
+                                loadUrl(configuredStartUrl)
+                            }
+                        },
+                    )
+                }
+            }
         }
     )
+}
+
+private fun Context.findActivityContext(): Context = when (this) {
+    is Activity -> this
+    is ContextWrapper -> if (baseContext === this) this else baseContext.findActivityContext()
+    else -> this
 }
 
 private fun expandApkBrowserTemplate(
@@ -476,6 +472,7 @@ private fun normalizeApkBrowserAddress(value: String): String {
     return if (isWebUrl) candidate
     else "https://www.google.com/search?q=${Uri.encode(input)}"
 }
+
 
 private data class PendingBrowserDownload(
     val url: String,

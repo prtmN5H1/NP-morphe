@@ -811,6 +811,11 @@ class PatcherViewModel(
         )
         appliedSelection = sanitizedSelection
         appliedOptions = sanitizedOptions
+        CrashLogManager.record("Install confirmed for $finalPackageName")
+
+        // Installation has been confirmed before this callback. Keep the staged file through
+        // Back, cancellation, and failed installer attempts so the same build can be retried.
+        if (installType != InstallType.SAVED) tempDir.deleteRecursively()
 
         true
     }
@@ -975,6 +980,7 @@ class PatcherViewModel(
                 when (workInfo?.state) {
                     WorkInfo.State.SUCCEEDED -> {
                         patchRun.stopStallWatch()
+                        CrashLogManager.record("Patch completed for $packageName")
 
                         // Save original APK before deleting temporary file (blocking).
                         // Launched independently so cancelling observeWorkerJob (new patch run)
@@ -1008,6 +1014,7 @@ class PatcherViewModel(
 
                     WorkInfo.State.FAILED -> {
                         patchRun.stopStallWatch()
+                        CrashLogManager.record("Patch failed for $packageName")
                         releaseForeground()
                         isPatching = false
                         _patcherSucceeded.value = false
@@ -1157,7 +1164,9 @@ class PatcherViewModel(
 
         // An install left running is still reading output.apk, which the next run or a restart
         // clears instead
-        if (!installStarted) tempDir.deleteRecursively()
+        if (!installStarted && !(patcherSucceeded.value == true && !prefs.savePatchedApks.getBlocking())) {
+            tempDir.deleteRecursively()
+        }
     }
 
     private companion object {

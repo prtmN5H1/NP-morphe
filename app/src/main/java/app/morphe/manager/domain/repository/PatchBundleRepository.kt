@@ -1338,42 +1338,33 @@ class PatchBundleRepository(
         keptApps: Set<String>? = null,
         usePrerelease: Boolean = false
     ): List<Int> {
-        val added = CompletableDeferred<List<Int>>()
-        dispatchAction("Add bundles (${urls.size})") { state ->
+        val created = mutableListOf<RemotePatchBundle>()
+        dispatchAction("Add bundles (${urls.size})", await = true) { state ->
             val ready = state as? BundleState.Ready
-            if (ready == null) {
-                added.complete(emptyList())
-                return@dispatchAction state
-            }
+            if (ready == null) return@dispatchAction state
 
             val takenKeys = ready.remoteSourceKeys().toMutableSet()
             val rejections = linkedSetOf<RemoteSourceRejection>()
-            val created = mutableListOf<RemotePatchBundle>()
-            try {
-                for (url in urls) {
-                    when (val check = checkRemoteUrl(url, takenKeys)) {
-                        is RemoteUrlCheck.Rejected -> {
-                            Log.i(LOG_TAG, "Skipped source $url: ${check.reason}")
-                            rejections += check.reason
-                        }
-                        is RemoteUrlCheck.Accepted -> {
-                            // The same repository pasted twice is one source
-                            takenKeys += check.endpoint.lowercase(Locale.US)
-                            try {
-                                created += createRemoteEntity(check.endpoint, usePrerelease)
-                            } catch (cancelled: CancellationException) {
-                                throw cancelled
-                            } catch (error: Exception) {
-                                Log.w(LOG_TAG, "Could not add source ${check.endpoint}; continuing with the rest", error)
-                                val sourceHost = check.endpoint.substringAfter("://").substringBefore('/').ifBlank { check.endpoint }
-                                messages.showIfInForeground(R.string.sources_download_fail_named, sourceHost)
-                            }
+            for (url in urls) {
+                when (val check = checkRemoteUrl(url, takenKeys)) {
+                    is RemoteUrlCheck.Rejected -> {
+                        Log.i(LOG_TAG, "Skipped source $url: ${check.reason}")
+                        rejections += check.reason
+                    }
+                    is RemoteUrlCheck.Accepted -> {
+                        // The same repository pasted twice is one source
+                        takenKeys += check.endpoint.lowercase(Locale.US)
+                        try {
+                            created += createRemoteEntity(check.endpoint, usePrerelease)
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (error: Exception) {
+                            Log.w(LOG_TAG, "Could not add source ${check.endpoint}; continuing with the rest", error)
+                            val sourceHost = check.endpoint.substringAfter("://").substringBefore('/').ifBlank { check.endpoint }
+                            messages.showIfInForeground(R.string.sources_download_fail_named, sourceHost)
                         }
                     }
                 }
-            } finally {
-                // A caller waits on this, so it is answered even when an entity fails to save
-                added.complete(created.map { it.uid })
             }
 
             rejections.forEach { messages.showIfInForeground(it.messageRes) }
@@ -1382,10 +1373,12 @@ class PatchBundleRepository(
             keptApps?.let { apps ->
                 created.forEach { sourceMuteRepository.setBringsNewApps(it.uid, false, apps) }
             }
-            update(*created.toTypedArray())
             ready.copy(sources = ready.sources.mutate { sources -> created.forEach { sources[it.uid] = it } })
         }
-        return added.await()
+        // Start network work only after the serial store action has committed the new source list.
+        // This also keeps callers from racing the UI's source/info flows after the batch returns.
+        if (created.isNotEmpty()) update(*created.toTypedArray())
+        return created.map { it.uid }
     }
 
     /**
@@ -1771,11 +1764,8 @@ class PatchBundleRepository(
      */
     suspend fun updateOrRepair(sources: List<RemotePatchBundle>, showMessage: Boolean = false) {
         val paused = prefs.bundleLoadingPaused.get()
-        val resumed = sources.filter { it.uid.toString() in paused }
-        if (resumed.isNotEmpty()) {
-            prefs.bundleLoadingPaused.update(paused - resumed.map { it.uid.toString() }.toSet())
-        }
-        val (failed, loaded) = sources.partition {
+        val eligible = sources.filterNot { it.uid.toString() in paused }
+        val (failed, loaded) = eligible.partition {
             it.state is PatchBundleSource.State.Failed || it.state is PatchBundleSource.State.Missing
         }
         if (failed.isNotEmpty()) update(*failed.toTypedArray(), force = true, showMessage = showMessage)

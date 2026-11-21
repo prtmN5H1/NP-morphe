@@ -15,6 +15,9 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
@@ -62,6 +65,7 @@ import kotlinx.coroutines.launch
 import org.koin.compose.koinInject
 import org.json.JSONObject
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Panel sources are added from, several at once: links pasted in any form and files attached from
@@ -81,6 +85,7 @@ fun AddSourcePanel(
     onRemoveFile: (Uri) -> Unit,
     localFiles: List<PickedBundle>,
     onCheckUrl: (String) -> RemoteUrlCheck,
+    installedSourceUrls: List<String> = emptyList(),
     modifier: Modifier = Modifier
 ) {
     var showCommunityNotice by rememberSaveable { mutableStateOf(false) }
@@ -164,17 +169,10 @@ fun AddSourcePanel(
                     )
                 }
                 CommunityCatalogWebView(
-                    onAddSource = { url -> remote.addCommunitySource(url) },
+                    onToggleSource = { url -> remote.toggleCommunitySource(url) },
                     onRemoveSource = { url -> remote.removeCommunitySource(url) },
-                    isSourceAdded = { url ->
-                        when (val check = onCheckUrl(url)) {
-                            is RemoteUrlCheck.Rejected -> check.reason == RemoteSourceRejection.Duplicate
-                            is RemoteUrlCheck.Accepted -> false
-                        }
-                    },
-                    isSourceQueued = { url ->
-                        remote.readyLinks.any { it.trimEnd('/').equals(url.trimEnd('/'), ignoreCase = true) }
-                    },
+                    installedSourceUrls = installedSourceUrls,
+                    queuedSourceUrls = { remote.readyLinks },
                     alreadyAddedLabel = alreadyAddedLabel,
                     selectedLabel = selectedLabel,
                     onWebViewCreated = { communityWebView = it },
@@ -184,18 +182,29 @@ fun AddSourcePanel(
                         
                 )
                 if (remote.readyLinks.isNotEmpty()) {
-                    Column(
+                    val queueListState = rememberLazyListState()
+                    LaunchedEffect(remote.readyLinks.size) {
+                        if (remote.readyLinks.isNotEmpty()) {
+                            queueListState.animateScrollToItem(remote.readyLinks.lastIndex)
+                        }
+                    }
+                    LazyColumn(
+                        state = queueListState,
                         modifier = Modifier
                             .padding(horizontal = Defaults.SpaceLarge)
-                            .heightIn(max = 132.dp)
-                            .verticalScroll(rememberScrollState())
+                            .heightIn(max = 132.dp),
+                        verticalArrangement = Arrangement.spacedBy(CompactCardSpacing)
                     ) {
-                        PendingSources(
-                            state = remote,
-                            files = emptyList(),
-                            onRemoveFile = {},
-                            showOrdinals = true,
-                        )
+                        itemsIndexed(remote.entries.filter { it.check is RemoteUrlCheck.Accepted }, key = { _, entry -> entry.key }) { index, entry ->
+                            PendingSourceRow(
+                                icon = remoteLinkIcon(entry.link),
+                                title = remoteLinkTitle(entry.link),
+                                detail = entry.link.bareLink(),
+                                isError = false,
+                                onRemove = { remote.remove(entry.link) },
+                                ordinal = index + 1,
+                            )
+                        }
                     }
                     NewSourceOptionsGroup(
                         options = options,
@@ -431,9 +440,15 @@ private class RemoteLinksState(
         val communityHost = Uri.parse(COMMUNITY_PATCHES_URL).host.orEmpty().lowercase(Locale.ROOT)
         val acceptedHost = host == "morphe.software" || host.endsWith(".morphe.software") ||
             host == communityHost || host.endsWith(".$communityHost")
-        if (!acceptedHost || uri.path != "/add-source") return null
-        return uri.getQueryParameter("github")?.let { "https://github.com/$it" }
-            ?: uri.getQueryParameter("gitlab")?.let { "https://gitlab.com/$it" }
+        if (acceptedHost && uri.path == "/add-source") {
+            return uri.getQueryParameter("github")?.trim('/')?.let { "https://github.com/$it" }
+                ?: uri.getQueryParameter("gitlab")?.trim('/')?.let { "https://gitlab.com/$it" }
+        }
+        canonicalGitHubSlug(uri)?.let { return "https://github.com/$it" }
+        if (host == "gitlab.com" && uri.pathSegments.size >= 2) {
+            return "https://gitlab.com/${uri.pathSegments.take(2).joinToString("/")}"
+        }
+        return null
     }
 
     fun addCommunitySource(addSourceUrl: String): Boolean {
@@ -445,10 +460,23 @@ private class RemoteLinksState(
     /** Tapping a queued catalogue card again removes it from the pending batch. */
     fun removeCommunitySource(addSourceUrl: String): Boolean {
         val repo = communityRepositoryUrl(addSourceUrl) ?: return false
-        val key = RemoteLinkEntry(repo, check(repo)).key
-        val queuedLink = entries.firstOrNull { it.key == key }?.link ?: return false
+        val keys = canonicalSourceKeys(repo)
+        val queuedLink = entries.firstOrNull { entry -> canonicalSourceKeys(entry.link).any(keys::contains) }?.link
+            ?: return false
         remove(queuedLink)
         return true
+    }
+
+    fun toggleCommunitySource(addSourceUrl: String): Boolean {
+        val repo = communityRepositoryUrl(addSourceUrl) ?: return false
+        val keys = canonicalSourceKeys(repo)
+        val queuedLink = entries.firstOrNull { entry -> canonicalSourceKeys(entry.link).any(keys::contains) }?.link
+        if (queuedLink != null) {
+            remove(queuedLink)
+            return true
+        }
+        if (check(repo) !is RemoteUrlCheck.Accepted) return false
+        return add(listOf(repo))
     }
 
     private fun add(newLinks: List<String>): Boolean {
@@ -457,6 +485,52 @@ private class RemoteLinksState(
         links = links + newLinks.filter { taken.add(RemoteLinkEntry(it, check(it)).key) }
         return true
     }
+}
+
+/** Canonical keys let catalogue cards match a source URL even when their URL forms differ. */
+private fun canonicalSourceKeys(rawValue: String): Set<String> {
+    val value = rawValue.trim()
+    if (value.isEmpty()) return emptySet()
+    val normalizedValue = if (value.startsWith("intent://")) {
+        "https://${value.removePrefix("intent://").substringBefore("#Intent;")}"
+    } else value
+    val uri = runCatching { Uri.parse(normalizedValue) }.getOrNull() ?: return emptySet()
+    val host = uri.host?.lowercase(Locale.ROOT)
+    if (host == "morphe.software" || host?.endsWith(".morphe.software") == true) {
+        if (uri.path == "/add-source") {
+            val repo = uri.getQueryParameter("github")?.let { "https://github.com/$it" }
+                ?: uri.getQueryParameter("gitlab")?.let { "https://gitlab.com/$it" }
+            if (repo != null) return canonicalSourceKeys(repo)
+        }
+    }
+    val slug = canonicalGitHubSlug(uri)
+        ?: Regex("^([\\w.-]+)/([\\w.-]+)$").matchEntire(value)?.let { "${it.groupValues[1]}/${it.groupValues[2]}" }
+    val scheme = uri.scheme?.lowercase(Locale.ROOT)
+    val path = uri.encodedPath.orEmpty().trimEnd('/').replace(Regex("\\.git$", RegexOption.IGNORE_CASE), "")
+    val normalizedUrl = if (scheme in setOf("http", "https") && !host.isNullOrBlank()) {
+        val port = uri.port.takeIf { it > 0 && !((scheme == "https" && it == 443) || (scheme == "http" && it == 80)) }
+            ?.let { ":$it" }.orEmpty()
+        "$scheme://$host$port$path" + uri.encodedQuery?.let { "?$it" }.orEmpty()
+    } else null
+    return buildSet {
+        normalizedUrl?.let { add("url:$it") }
+        slug?.let { add("gh:${it.lowercase(Locale.ROOT).removeSuffix(".git")}") }
+    }
+}
+
+private fun canonicalGitHubSlug(uri: Uri): String? {
+    val host = uri.host?.lowercase(Locale.ROOT) ?: return null
+    val parts = uri.pathSegments
+    val slugParts = when (host) {
+        "github.com" -> parts.take(2)
+        "raw.githubusercontent.com" -> parts.take(2)
+        "api.github.com" -> if (parts.firstOrNull() == "repos") parts.drop(1).take(2) else emptyList()
+        else -> emptyList()
+    }
+    if (slugParts.size < 2) return null
+    val owner = slugParts[0].trim().trim('/').lowercase(Locale.ROOT)
+    val repo = slugParts[1].substringBefore('/').trim().lowercase(Locale.ROOT).removeSuffix(".git")
+    return "$owner/$repo".takeIf { owner.isNotBlank() && repo.isNotBlank() }
 }
 
 @Composable
@@ -671,7 +745,7 @@ private fun PendingSourceRow(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = ordinal.toString(),
+                    text = "$ordinal.",
                     style = MaterialTheme.typography.labelMedium,
                     color = colors.onSecondaryContainer
                 )
@@ -685,7 +759,21 @@ private fun PendingSourceRow(
                 Icon(icon, contentDescription = null, modifier = Modifier.size(CompactCardGlyphSize))
             }
         }
-        CardHeadingText(name = title, description = detail, modifier = Modifier.weight(1f))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+            )
+            Text(
+                text = detail,
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.onSurfaceVariant,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+            )
+        }
         TooltipIconButton(
             onClick = onRemove,
             icon = MaterialSymbols.Rounded.Close,
@@ -703,24 +791,32 @@ private fun PendingSourceRow(
  */
 @Composable
 private fun CommunityCatalogWebView(
-    onAddSource: (String) -> Boolean,
+    onToggleSource: (String) -> Boolean,
     onRemoveSource: (String) -> Boolean,
-    isSourceAdded: (String) -> Boolean,
-    isSourceQueued: (String) -> Boolean,
+    installedSourceUrls: List<String>,
+    queuedSourceUrls: () -> List<String>,
     alreadyAddedLabel: String,
     selectedLabel: String,
     onWebViewCreated: (WebView) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val currentAdd by rememberUpdatedState(onAddSource)
+    val currentToggle by rememberUpdatedState(onToggleSource)
     val currentRemove by rememberUpdatedState(onRemoveSource)
-    val currentIsAdded by rememberUpdatedState(isSourceAdded)
-    val currentIsQueued by rememberUpdatedState(isSourceQueued)
+    val installedKeyJson = remember(installedSourceUrls) {
+        org.json.JSONArray(installedSourceUrls.flatMap(::canonicalSourceKeys).distinct().sorted()).toString()
+    }
+    val currentQueuedUrls = queuedSourceUrls()
+    val queuedKeyJson = remember(currentQueuedUrls) {
+        org.json.JSONArray(currentQueuedUrls.flatMap(::canonicalSourceKeys).distinct().sorted()).toString()
+    }
+    val currentInstalledKeyJson by rememberUpdatedState(installedKeyJson)
+    val currentQueuedKeyJson by rememberUpdatedState(queuedKeyJson)
     val currentOnWebViewCreated by rememberUpdatedState(onWebViewCreated)
     AndroidView(
         modifier = modifier,
         factory = { context ->
             WebView(context).apply {
+                val lastTappedSourceUrl = AtomicReference<String?>(null)
                 currentOnWebViewCreated(this)
                 overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
                 setOnTouchListener { view, event ->
@@ -737,6 +833,7 @@ private fun CommunityCatalogWebView(
 
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
+                settings.databaseEnabled = true
                 settings.loadsImagesAutomatically = true
                 // Let the catalogue use browser-native window.open behavior. With multiple
                 // windows disabled below, target=_blank pages stay inside this WebView instead
@@ -745,35 +842,55 @@ private fun CommunityCatalogWebView(
                 settings.setSupportMultipleWindows(false)
                 settings.allowFileAccess = false
                 settings.allowContentAccess = false
-                settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
+                settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                settings.userAgentString = settings.userAgentString
+                    .replace("; wv", "", ignoreCase = true)
+                    .replace("Version/4.0 ", "", ignoreCase = true)
                 android.webkit.CookieManager.getInstance().setAcceptCookie(true)
                 android.webkit.CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
 
                 addJavascriptInterface(object {
                     @JavascriptInterface
-                    fun isAdded(url: String): Boolean =
-                        runCatching { currentIsAdded(url) }.getOrDefault(false)
+                    fun installedKeys(): String = currentInstalledKeyJson
 
                     @JavascriptInterface
-                    fun isQueued(url: String): Boolean =
-                        runCatching { currentIsQueued(url) }.getOrDefault(false)
+                    fun queuedKeys(): String = currentQueuedKeyJson
+
+                    @JavascriptInterface
+                    fun recordTap(url: String) {
+                        lastTappedSourceUrl.set(url.take(2048))
+                    }
+
+                    @JavascriptInterface
+                    fun removeQueued(url: String) {
+                        android.os.Handler(android.os.Looper.getMainLooper()).post {
+                            runCatching { currentRemove(url) }
+                        }
+                    }
 
                 }, "MorpheCatalog")
 
                 webViewClient = object : WebViewClient() {
                     private fun handleNavigation(view: WebView, url: String, mainFrame: Boolean): Boolean {
                         if (!mainFrame) return false
+                        val rawUri = runCatching { Uri.parse(url) }.getOrNull() ?: return true
+                        if (rawUri.scheme.equals("morphe", ignoreCase = true)) {
+                            val tapped = lastTappedSourceUrl.getAndSet(null)
+                            val source = tapped
+                                ?: rawUri.getQueryParameter("url")
+                                ?: rawUri.getQueryParameter("github")?.let { "https://github.com/$it" }
+                            if (!source.isNullOrBlank()) runCatching { currentToggle(source) }
+                            return true
+                        }
+                        lastTappedSourceUrl.set(null)
                         val normalizedUrl = if (url.startsWith("intent://")) {
                             "https://" + url.removePrefix("intent://").substringBefore("#Intent;")
                         } else url
                         val navigationUri = runCatching { Uri.parse(normalizedUrl) }.getOrNull()
                             ?: return true
                         val navigationHost = navigationUri.host.orEmpty().lowercase(Locale.ROOT)
-                        val communityHost = Uri.parse(COMMUNITY_PATCHES_URL).host.orEmpty().lowercase(Locale.ROOT)
                         val allowedHost = navigationHost == "morphe.software" ||
-                                navigationHost.endsWith(".morphe.software") ||
-                                navigationHost == communityHost ||
-                                navigationHost.endsWith(".$communityHost")
+                                navigationHost.endsWith(".morphe.software")
                         if (navigationUri.scheme in setOf("http", "https") && !allowedHost) {
                             android.util.Log.d("MorpheCommunityWeb", "Blocked external top-level navigation: $navigationHost")
                             android.widget.Toast.makeText(
@@ -783,14 +900,8 @@ private fun CommunityCatalogWebView(
                             ).show()
                             return true
                         }
-                        val repository = runCatching {
-                            if (!allowedHost || navigationUri.path != "/add-source") return@runCatching null
-                            navigationUri.getQueryParameter("github")?.let { "https://github.com/$it" }
-                                ?: navigationUri.getQueryParameter("gitlab")?.let { "https://gitlab.com/$it" }
-                        }.getOrNull()
-                        if (repository != null) {
-                            if (currentIsQueued(repository)) currentRemove(normalizedUrl)
-                            else currentAdd(normalizedUrl)
+                        if (allowedHost && navigationUri.path == "/add-source") {
+                            runCatching { currentToggle(normalizedUrl) }
                             return true
                         }
                         // All other links, routing and click handlers remain owned by the website.
@@ -814,50 +925,122 @@ private fun CommunityCatalogWebView(
                               if (window.__morpheCatalogObserver) {
                                 try { window.__morpheCatalogObserver.disconnect(); } catch(e) {}
                               }
-                              if (!document.getElementById('morphe-catalog-status-style')) {
-                                var style = document.createElement('style');
-                                style.id = 'morphe-catalog-status-style';
-                                var labels = {added:${JSONObject.quote(alreadyAddedLabel)}, selected:${JSONObject.quote(selectedLabel)}};
-                                style.textContent = 'a[data-morphe-status="added"]::after{content:" · '+labels.added+'";font-size:.8em;opacity:.72}a[data-morphe-status="queued"]::after{content:" · '+labels.selected+'";font-size:.8em;opacity:.82}';
-                                document.head.appendChild(style);
-                              }
-                              function sourceUrl(href) {
+                              var labels = {added:${JSONObject.quote(alreadyAddedLabel)}, selected:${JSONObject.quote(selectedLabel)}};
+                              function sourceFor(value) {
                                 try {
-                                  if (href.indexOf('intent://') === 0) href = 'https://' + href.substring(9).split('#Intent;')[0];
-                                  var u = new URL(href, location.href);
+                                  if (!value) return null;
+                                  value = String(value).trim();
+                                  if (/^[\w.-]+\/[\w.-]+$/.test(value)) return 'https://github.com/' + value;
+                                  if (value.indexOf('intent://') === 0) value = 'https://' + value.substring(9).split('#Intent;')[0];
+                                  var u = new URL(value, location.href);
                                   var host = u.hostname.toLowerCase();
-                                  var allowed = host === 'morphe.software' || host.endsWith('.morphe.software') ||
-                                    host === 'morphe-patches.software' || host.endsWith('.morphe-patches.software');
-                                  if (!allowed) return null;
-                                  if (u.pathname !== '/add-source') return null;
-                                  var owner = u.searchParams.get('github');
-                                  if (owner) return 'https://github.com/' + owner.replace(/^\/+|\/+$/g, '');
-                                  owner = u.searchParams.get('gitlab');
-                                  if (owner) return 'https://gitlab.com/' + owner.replace(/^\/+|\/+$/g, '');
+                                  if ((host === 'morphe.software' || host.endsWith('.morphe.software')) && u.pathname === '/add-source') {
+                                    var repo = u.searchParams.get('github');
+                                    if (repo) return 'https://github.com/' + repo.replace(/^\/+|\/+$/g, '');
+                                    repo = u.searchParams.get('gitlab');
+                                    if (repo) return 'https://gitlab.com/' + repo.replace(/^\/+|\/+$/g, '');
+                                  }
+                                  return u.href;
                                 } catch(e) {}
                                 return null;
                               }
-                              var statusCache = Object.create(null);
+                              function keysFor(value) {
+                                var source = sourceFor(value);
+                                if (!source) return [];
+                                var u;
+                                try { u = new URL(source, location.href); } catch(e) { return []; }
+                                var host = u.hostname.toLowerCase();
+                                var path = u.pathname.replace(/\/+$/, '').replace(/\.git$/i, '');
+                                var keys = ['url:' + u.protocol.toLowerCase() + '//' + host + path + u.search];
+                                var parts = path.split('/').filter(Boolean);
+                                var slug = null;
+                                if (host === 'github.com' || host === 'raw.githubusercontent.com') slug = parts.slice(0, 2).join('/');
+                                if (host === 'api.github.com' && parts[0] === 'repos') slug = parts.slice(1, 3).join('/');
+                                if (slug && slug.indexOf('/') > 0) keys.push('gh:' + slug.toLowerCase().replace(/\.git$/i, ''));
+                                return keys;
+                              }
+                              function cardFor(el) {
+                                var node = el;
+                                for (var i = 0; node && i < 7; i++, node = node.parentElement) {
+                                  if (node.matches && (node.matches('article,li,[data-testid*="card" i]') || /card|bundle/i.test(node.className || ''))) return node;
+                                }
+                                return el.parentElement || el;
+                              }
+                              function sourceCandidates(el) {
+                                var card = cardFor(el), values = [];
+                                [el, card].forEach(function(node) {
+                                  if (!node || !node.getAttribute) return;
+                                  ['href','data-url','data-source-url','data-github','data-repo','data-source','data-bundle-url'].forEach(function(attr) {
+                                    var value = node.getAttribute(attr); if (value) values.push(value);
+                                  });
+                                });
+                                if (card && card.querySelectorAll) card.querySelectorAll('a[href],[data-url],[data-source-url],[data-github],[data-repo]').forEach(function(node) {
+                                  ['href','data-url','data-source-url','data-github','data-repo'].forEach(function(attr) {
+                                    var value = node.getAttribute(attr); if (value) values.push(value);
+                                  });
+                                });
+                                var text = (card && card.innerText || el.innerText || '').match(/\b[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\b/g) || [];
+                                return values.concat(text);
+                              }
+                              function isAddControl(el) {
+                                var label = ((el.innerText || el.textContent || '') + ' ' + (el.getAttribute('aria-label') || '')).trim();
+                                var href = el.getAttribute('href') || '';
+                                return /add\s*(to\s*morphe)?|already\s+added|selected|morphe:\/\//i.test(label + ' ' + href);
+                              }
+                              function setLabel(el, label) {
+                                if (!el.dataset.morpheOriginalHtml) el.dataset.morpheOriginalHtml = el.innerHTML;
+                                if ((el.textContent || '').trim() !== label) el.textContent = label;
+                                el.setAttribute('aria-label', label);
+                              }
+                              function restore(el) {
+                                if (el.dataset.morpheOriginalHtml) el.innerHTML = el.dataset.morpheOriginalHtml;
+                                delete el.dataset.morpheOriginalHtml;
+                                delete el.dataset.morpheStatus;
+                                delete el.dataset.morpheSourceUrl;
+                                el.removeAttribute('aria-disabled');
+                                el.style.removeProperty('outline');
+                                el.style.removeProperty('border-radius');
+                                el.style.removeProperty('opacity');
+                                el.style.removeProperty('background-color');
+                                el.style.removeProperty('color');
+                                if ('disabled' in el) el.disabled = false;
+                              }
+                              var installed = [], queued = [];
                               var decorateQueued = false;
                               function decorate() {
-                                document.querySelectorAll('a[href]').forEach(function(a) {
-                                  var src = sourceUrl(a.href);
-                                  if (!src) return;
-                                  var status = statusCache[src];
-                                  if (!status) {
-                                    var added = false, queued = false;
-                                    try { added = MorpheCatalog.isAdded(src); } catch(e) {}
-                                    try { queued = MorpheCatalog.isQueued(src); } catch(e) {}
-                                    status = statusCache[src] = added ? 'added' : (queued ? 'queued' : 'new');
-                                  }
-                                  if (status === 'added') {
-                                    a.dataset.morpheStatus = 'added';
-                                  } else {
-                                    if (status === 'queued') {
-                                      a.dataset.morpheStatus = 'queued';
-                                    } else {
-                                      delete a.dataset.morpheStatus;
+                                try { installed = JSON.parse(MorpheCatalog.installedKeys() || '[]'); } catch(e) { installed = []; }
+                                try { queued = JSON.parse(MorpheCatalog.queuedKeys() || '[]'); } catch(e) { queued = []; }
+                                document.querySelectorAll('button,a,[role="button"]').forEach(function(el) {
+                                  if (!isAddControl(el)) return;
+                                  var candidates = sourceCandidates(el), keys = [], resolved = null;
+                                  candidates.forEach(function(value) {
+                                    var candidateKeys = keysFor(value);
+                                    if (candidateKeys.length && (!resolved || candidateKeys.some(function(key) { return key.indexOf('gh:') === 0; }))) {
+                                      resolved = sourceFor(value);
                                     }
+                                    keys = keys.concat(candidateKeys);
+                                  });
+                                  var status = keys.some(function(key) { return installed.indexOf(key) >= 0; }) ? 'added' :
+                                    (keys.some(function(key) { return queued.indexOf(key) >= 0; }) ? 'queued' : 'new');
+                                  if (status === 'new') {
+                                    if (el.dataset.morpheStatus) restore(el);
+                                    el.dataset.morpheSourceUrl = resolved || '';
+                                    return;
+                                  }
+                                  el.dataset.morpheStatus = status;
+                                  el.dataset.morpheSourceUrl = resolved || '';
+                                  setLabel(el, status === 'added' ? labels.added : labels.selected);
+                                  if (status === 'added') {
+                                    el.setAttribute('aria-disabled', 'true');
+                                    el.style.opacity = '.55';
+                                    if ('disabled' in el) el.disabled = true;
+                                  } else {
+                                    el.removeAttribute('aria-disabled');
+                                    el.style.opacity = '1';
+                                    el.style.outline = '2px solid #4caf50';
+                                    el.style.borderRadius = '6px';
+                                    el.style.backgroundColor = 'rgba(76,175,80,.16)';
+                                    if ('disabled' in el) el.disabled = false;
                                   }
                                 });
                               }
@@ -871,12 +1054,28 @@ private fun CommunityCatalogWebView(
                               }
                               window.__morpheCatalogDecorate = scheduleDecorate;
                               window.__morpheCatalogRefresh = function() {
-                                statusCache = Object.create(null);
                                 scheduleDecorate();
                               };
+                              if (!window.__morpheCatalogClickHandler) {
+                                window.__morpheCatalogClickHandler = function(event) {
+                                  var el = event.target && event.target.closest && event.target.closest('button,a,[role="button"]');
+                                  if (!el || !el.dataset.morpheSourceUrl) return;
+                                  if (el.dataset.morpheStatus === 'added') {
+                                    event.preventDefault(); event.stopImmediatePropagation(); return;
+                                  }
+                                  if (el.dataset.morpheStatus === 'queued') {
+                                    event.preventDefault(); event.stopImmediatePropagation();
+                                    try { MorpheCatalog.removeQueued(el.dataset.morpheSourceUrl); } catch(e) {}
+                                    setTimeout(scheduleDecorate, 50);
+                                    return;
+                                  }
+                                  try { MorpheCatalog.recordTap(el.dataset.morpheSourceUrl); } catch(e) {}
+                                };
+                                document.addEventListener('click', window.__morpheCatalogClickHandler, true);
+                              }
                               decorate();
                               window.__morpheCatalogObserver = new MutationObserver(scheduleDecorate);
-                              window.__morpheCatalogObserver.observe(document.documentElement, {childList:true, subtree:true, attributes:true, attributeFilter:['href']});
+                              window.__morpheCatalogObserver.observe(document.documentElement, {childList:true, subtree:true, characterData:true, attributes:true, attributeFilter:['href','data-url','data-source-url','data-github','data-repo','aria-label']});
                             })();
                         """.trimIndent(), null)
                     }
@@ -891,7 +1090,7 @@ private fun CommunityCatalogWebView(
                     }
 
                 }
-                loadUrl("https://morphe-patches.software/")
+                loadUrl("https://morphe.software/")
             }
         },
         update = { view ->
