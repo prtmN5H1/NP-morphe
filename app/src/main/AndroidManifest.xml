@@ -191,10 +191,24 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data
                     android:scheme="https"
-                    android:host="morphe.software"
+                    android:host="morphe-patches.software"
                     android:pathPrefix="/add-source" />
             </intent-filter>
         </activity>
+
+        <!-- Isolated WebView windows keep Chromium popups above content and detach safely. -->
+        <activity
+            android:name="app.morphe.manager.ui.screen.sources.CommunityCatalogActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:theme="@style/Theme.MorpheManager" />
+
+        <activity
+            android:name="app.morphe.manager.ui.screen.home.InAppBrowserActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.MorpheManager" />
 
         <service
             android:name="androidx.work.impl.foreground.SystemForegroundService"

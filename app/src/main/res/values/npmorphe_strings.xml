@@ -39,6 +39,8 @@
     <string name="npmorphe_settings_crash_logs">Crash &amp; App Logs</string>
     <string name="npmorphe_settings_crash_logs_description">Recent app logs and saved crash reports stay on this device.</string>
     <string name="npmorphe_settings_copy_logs">Copy logs</string>
+    <string name="npmorphe_settings_copy_all_logs">Copy all</string>
+    <string name="npmorphe_copy">Copy</string>
     <string name="npmorphe_settings_share_logs">Share logs</string>
     <string name="npmorphe_settings_clear_logs">Clear logs</string>
     <string name="npmorphe_settings_logs_copied">Logs copied.</string>
@@ -64,7 +66,7 @@
     <string name="home_apk_browser_title">Find an APK</string>
     <string name="home_app_info_rollback_backup_enabled">Back up this app before replacement</string>
     <string name="home_app_info_rollback_backup_enabled_description">The global rollback backup setting must also be on.</string>
-    <string name="home_app_info_rollback_cleanup_enabled">Ask to clear this app’s backup after opening</string>
+    <string name="home_app_info_rollback_cleanup_enabled">Ask to clear this app\'s backup after opening</string>
     <string name="home_app_info_rollback_cleanup_enabled_description">The global cleanup setting must also be on.</string>
     <string name="home_app_info_rollback_previous_version">Saved previous version</string>
     <string name="installer_rollback_clear_backup">Clear old backup</string>
@@ -94,6 +96,10 @@
     <string name="patch_history_patched_at">Patched</string>
     <string name="patch_history_patches">Patches</string>
     <string name="patch_history_sources">Patch sources</string>
+    <string name="patch_history_source">Patch source</string>
+    <string name="patch_history_runtime">Runtime</string>
+    <string name="patch_history_manager">Manager</string>
+    <string name="patch_history_patched_version">Patched version</string>
     <string name="patch_history_title">Patch history</string>
     <string name="settings_advanced_default_experimental_apps">Experimental app versions by default</string>
     <string name="settings_advanced_default_experimental_apps_description">Enable experimental app targets by default for new sources that provide them. You can still change each source individually.</string>

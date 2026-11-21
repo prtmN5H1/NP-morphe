@@ -21,6 +21,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -29,6 +30,8 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.morphe.manager.R
 import app.morphe.manager.domain.manager.APK_BROWSER_APP_DEFAULT_URL_SEPARATOR
@@ -50,6 +53,33 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.koin.androidx.compose.koinViewModel
 import org.koin.compose.koinInject
+
+private data class CrashLogCardData(val header: String, val preview: String, val fullText: String)
+
+private fun parseCrashLogEntries(rawLogs: String): List<CrashLogCardData> =
+    rawLogs.split("=== NPmorphe crash ===")
+        .map(String::trim)
+        .filter(String::isNotBlank)
+        .asReversed()
+        .map { block ->
+            val lines = block.lines()
+            val timestamp = lines.firstOrNull { it.startsWith("Timestamp:") }
+                ?.substringAfter(':')?.trim().orEmpty()
+            val stackStart = lines.indexOfFirst { it.trim().equals("Stack trace:", ignoreCase = true) }
+            val stack = if (stackStart >= 0) lines.drop(stackStart + 1).dropWhile(String::isBlank) else emptyList()
+            val title = stack.firstOrNull(String::isNotBlank)?.trim()
+                ?: lines.firstOrNull { it.startsWith("Thread:") }?.substringAfter(':')?.trim()
+                ?: "Crash report"
+            val preview = stack.take(12).joinToString("\n").ifBlank {
+                lines.take(12).joinToString("\n")
+            }
+            val full = "=== NPmorphe crash ===\n" + block
+            CrashLogCardData(
+                header = listOf(timestamp, title).filter(String::isNotBlank).joinToString(" · "),
+                preview = preview,
+                fullText = full
+            )
+        }
 
 /** Fork identity, browser defaults, history and rollback controls in one settings destination. */
 @Composable
@@ -77,6 +107,7 @@ fun NPmorpheSettings(
     var showStandaloneBrowser by rememberSaveable { mutableStateOf(false) }
     var showCrashLogs by rememberSaveable { mutableStateOf(false) }
     var crashLogs by remember { mutableStateOf("") }
+    val crashEntries = remember(crashLogs) { parseCrashLogEntries(crashLogs) }
 
     val browserPreferenceLabel = when (browserPreference) {
         ApkBrowserPreference.ASK -> stringResource(R.string.settings_system_apk_browser_ask)
@@ -228,6 +259,7 @@ fun NPmorpheSettings(
     DialogHost(visible = showStandaloneBrowser) {
         ApkDownloadBrowserDialog(
             initialUrl = APK_BROWSER_DEFAULT_URL,
+            isStandalone = true,
             onDismiss = { showStandaloneBrowser = false },
             onApkDownloaded = { _, _, _, _ ->
                 Toast.makeText(context, context.getString(R.string.npmorphe_settings_browser_download_saved), Toast.LENGTH_SHORT).show()
@@ -262,7 +294,7 @@ fun NPmorpheSettings(
                         Toast.makeText(context, context.getString(R.string.npmorphe_settings_logs_copied), Toast.LENGTH_SHORT).show()
                     },
                     icon = MaterialSymbols.Rounded.Content_copy,
-                    title = stringResource(R.string.npmorphe_settings_copy_logs)
+                    title = stringResource(R.string.npmorphe_settings_copy_all_logs)
                 )
                 SettingsItem(
                     onClick = {
@@ -283,11 +315,46 @@ fun NPmorpheSettings(
                     icon = MaterialSymbols.Rounded.Delete,
                     title = stringResource(R.string.npmorphe_settings_clear_logs)
                 )
-                Text(
-                    text = crashLogs.ifBlank { stringResource(R.string.npmorphe_settings_logs_empty) },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                if (crashEntries.isEmpty()) {
+                    Text(
+                        text = stringResource(R.string.npmorphe_settings_logs_empty),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    crashEntries.forEach { entry ->
+                        SurfaceCard(
+                            cornerRadius = Defaults.CornerLarge,
+                            showBorder = true,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.fillMaxWidth().padding(Defaults.SpaceMedium),
+                                verticalArrangement = Arrangement.spacedBy(Defaults.SpaceSmall)
+                            ) {
+                                Text(
+                                    text = entry.header,
+                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = entry.preview,
+                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                TextButton(
+                                    onClick = {
+                                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                        clipboard.setPrimaryClip(ClipData.newPlainText("NPmorphe crash log", entry.fullText))
+                                        Toast.makeText(context, context.getString(R.string.npmorphe_settings_logs_copied), Toast.LENGTH_SHORT).show()
+                                    }
+                                ) {
+                                    Text(stringResource(R.string.npmorphe_copy))
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
