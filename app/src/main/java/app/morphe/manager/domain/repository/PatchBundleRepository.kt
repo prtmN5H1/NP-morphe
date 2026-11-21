@@ -29,6 +29,7 @@ import app.morphe.manager.data.room.bundles.PatchBundleProperties
 import app.morphe.manager.data.room.bundles.Source
 import app.morphe.manager.domain.bundles.*
 import app.morphe.manager.domain.bundles.PatchBundleSource.Extensions.isHeldBack
+import app.morphe.manager.domain.manager.AutoUpdates
 import app.morphe.manager.domain.manager.PreferencesManager
 import app.morphe.manager.network.utils.APIError
 import app.morphe.manager.patcher.patch.BundleAppMetadata
@@ -1640,7 +1641,10 @@ class PatchBundleRepository(
         prefs.bundleAutoUpdatesDisabled.update(disabled)
         prefs.bundleVersionPins.update(pins.map { (uid, url) -> "$uid|$url" }.toSet())
         if (restored.isNotEmpty()) {
-            update(*restored.toTypedArray(), allowUnsafeNetwork = prefs.allowMeteredUpdates.get())
+            update(
+                *restored.toTypedArray(),
+                allowUnsafeNetwork = prefs.autoUpdates.get() == AutoUpdates.DOWNLOAD
+            )
         }
     }
 
@@ -1693,7 +1697,7 @@ class PatchBundleRepository(
                     *bundles.toTypedArray(),
                     force = true,
                     showMessage = true,
-                    allowUnsafeNetwork = prefs.allowMeteredUpdates.get()
+                    allowUnsafeNetwork = prefs.autoUpdates.get() == AutoUpdates.DOWNLOAD
                 )
             }
         }
@@ -1733,7 +1737,7 @@ class PatchBundleRepository(
 
     /** Changes only the persisted endpoint while keeping the installed bundle until its replacement arrives. */
     private suspend fun replaceRemoteEndpoint(uid: Int, endpoint: String): RemotePatchBundle? {
-        val normalized = runCatching { normalizeRemoteBundleUrl(endpoint) }.getOrNull() ?: return null
+        val normalized = runCatching { SourceUrl.normalizeBundleUrl(endpoint) }.getOrNull() ?: return null
         var changed: RemotePatchBundle? = null
         dispatchAction("Change pinned source endpoint ($uid)", await = true) { state ->
             val ready = state as? BundleState.Ready ?: return@dispatchAction state
@@ -2285,7 +2289,7 @@ class PatchBundleRepository(
                     updatedAt = entity.updatedAt,
                     pinnedSource = versionPins[entity.uid],
                     pinnedVersion = if (entity.uid in versionPins) {
-                        (entity.source as? Source.Remote)?.url?.toString()?.let { JsonPatchBundle.extractBranch(it) }
+                        (entity.source as? Source.Remote)?.url?.toString()?.let { SourceUrl.parse(it)?.branch }
                     } else null,
                     prerelease = entity.uid.toString() in prereleaseUids,
                     experimentalVersions = entity.uid.toString() in experimentalUids,
@@ -2537,7 +2541,7 @@ class PatchBundleRepository(
                             forgetBundle(existing.uid)
                             metadataFetchErrorsFlow.update { it - existing.uid }
                         }.onFailure { error ->
-                            Log.w(tag, "Could not update archived bundle for ${existing.name}; keeping the installed copy", error)
+                            Log.w(LOG_TAG, "Could not update archived bundle for ${existing.name}; keeping the installed copy", error)
                         }.isSuccess
                         changedAny = changedAny || restored || existing.state is PatchBundleSource.State.Missing
                     } else if (existing?.state is PatchBundleSource.State.Missing) {
@@ -2547,7 +2551,7 @@ class PatchBundleRepository(
                     return@forEach
                 }
                 val baseEndpoint = snapshot.pinnedSource
-                    ?.let { runCatching { normalizeRemoteBundleUrl(it) }.getOrNull() }
+                    ?.let { runCatching { SourceUrl.normalizeBundleUrl(it) }.getOrNull() }
                 if (baseEndpoint != null && (
                         !knownEndpoints.add(baseEndpoint.lowercase(Locale.US)) ||
                                 existingSourceUid(baseEndpoint) != null
@@ -2571,7 +2575,7 @@ class PatchBundleRepository(
                         source.installArchivedBundle(artifact.file, artifact.signingKey)
                         updateDb(created.uid) { it.copy(versionHash = artifact.versionSignature) }
                     }.onFailure { throwable ->
-                        Log.w(tag, "Could not restore archived bundle for ${created.name}; will fetch it", throwable)
+                        Log.w(LOG_TAG, "Could not restore archived bundle for ${created.name}; will fetch it", throwable)
                     }
                 }
                 // New bundles get fresh UIDs, so carry the toggles over by UID

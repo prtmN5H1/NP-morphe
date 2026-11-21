@@ -82,7 +82,6 @@ fun BatchPatcherScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
-    val miniGameState = remember { MiniGameState(prefs, scope) }
     var inAppBrowserUrl by rememberSaveable { mutableStateOf<String?>(null) }
 
     LaunchedEffect(targets) {
