@@ -88,7 +88,7 @@ internal fun DialogHostScope.ApkAvailabilityDialog(
     stockAppInstalled: Boolean,
     isExpertMode: Boolean,
     savedApkInfo: SavedApkInfo?,
-    downloadedBaseApk: DownloadedBaseApk?,
+    downloadedBaseApk: DownloadedBaseApk? = null,
     installedApkInfo: InstalledApkInfo?,
     installedAppVersion: String?,
     hiddenSourceCount: Int,
@@ -96,7 +96,7 @@ internal fun DialogHostScope.ApkAvailabilityDialog(
     onHaveApk: () -> Unit,
     onNeedApk: () -> Unit,
     onUseSaved: () -> Unit,
-    onUseDownloaded: () -> Unit,
+    onUseDownloaded: () -> Unit = {},
     onUseInstalled: () -> Unit
 ) {
     val context = LocalContext.current

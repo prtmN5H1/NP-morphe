@@ -60,7 +60,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Locale
 
-internal data class DownloadedBaseApk(
+data class DownloadedBaseApk(
     val file: File,
     val requestedVersion: String?,
     val sourceUrl: String?
@@ -650,7 +650,7 @@ class InAppBrowserActivity : ComponentActivity() {
         android.app.AlertDialog.Builder(this)
             .setTitle(R.string.npmorphe_browser_download_cancel_title)
             .setMessage(R.string.npmorphe_browser_download_cancel_message)
-            .setNegativeButton(R.string.cancel, null)
+            .setNegativeButton(android.R.string.cancel, null)
             .setPositiveButton(R.string.npmorphe_browser_download_cancel) { _, _ ->
                 closingAfterCancel = closeWhenCancelled
                 activeConnection?.disconnect()
