@@ -328,10 +328,10 @@ jobs:
               if ! grep -Fq 'const val MANAGER_REPO_URL = CUSTOM_SOURCE_REPO_URL' "$constants_file"; then
                 missing_custom_state+="${constants_file}: updater is no longer pinned to the custom repository\n"
               fi
-              if ! grep -Fq 'const val MANAGER_RELEASE_JSON_URL = "https://raw.githubusercontent.com/prtmN5H1/NP-morphe/' "$constants_file"; then
+              if ! grep -Fq 'const val MANAGER_RELEASE_JSON_URL = "https://raw.githubusercontent.com/prtmN5H1/NP-morphe/' "$constants_file" && ! (grep -Fq 'MANAGER_RAW_URL = "https://$GITHUB_RAW_HOST/prtmN5H1/NP-morphe/' "$constants_file" && grep -Fq 'const val MANAGER_RELEASE_JSON_URL = "$MANAGER_RAW_URL/main/app-release.json"' "$constants_file"); then
                 missing_custom_state+="${constants_file}: stable updater metadata URL is no longer custom\n"
               fi
-              if ! grep -Fq 'const val MANAGER_PRERELEASE_JSON_URL = "https://raw.githubusercontent.com/prtmN5H1/NP-morphe/' "$constants_file"; then
+              if ! grep -Fq 'const val MANAGER_PRERELEASE_JSON_URL = "https://raw.githubusercontent.com/prtmN5H1/NP-morphe/' "$constants_file" && ! (grep -Fq 'MANAGER_RAW_URL = "https://$GITHUB_RAW_HOST/prtmN5H1/NP-morphe/' "$constants_file" && grep -Fq 'const val MANAGER_PRERELEASE_JSON_URL = "$MANAGER_RAW_URL/dev/app-release.json"' "$constants_file"); then
                 missing_custom_state+="${constants_file}: prerelease updater metadata URL is no longer custom\n"
               fi
               if ! grep -Fq 'const val CUSTOM_DEVELOPER_NAME = "prtmN5H1 (NPmorphe)"' "$constants_file"; then
