@@ -5,20 +5,29 @@
 
 package app.morphe.manager.ui.screen.home
 
+import android.widget.Toast
 import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.surfaceColorAtElevation
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -26,6 +35,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -49,6 +59,11 @@ import app.morphe.manager.util.withVersionPrefix
 import app.morphe.patcher.patch.AppTarget
 import com.composables.icons.materialsymbols.MaterialSymbols
 import com.composables.icons.materialsymbols.rounded.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.util.Locale
 
 /**
  * Dialog 1: Initial "Do you have the APK?" dialog.
@@ -73,6 +88,7 @@ internal fun DialogHostScope.ApkAvailabilityDialog(
     stockAppInstalled: Boolean,
     isExpertMode: Boolean,
     savedApkInfo: SavedApkInfo?,
+    downloadedBaseApk: DownloadedBaseApk?,
     installedApkInfo: InstalledApkInfo?,
     installedAppVersion: String?,
     hiddenSourceCount: Int,
@@ -80,8 +96,34 @@ internal fun DialogHostScope.ApkAvailabilityDialog(
     onHaveApk: () -> Unit,
     onNeedApk: () -> Unit,
     onUseSaved: () -> Unit,
+    onUseDownloaded: () -> Unit,
     onUseInstalled: () -> Unit
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var pendingSaveFile by remember { mutableStateOf<File?>(null) }
+    val saveApkLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/vnd.android.package-archive")
+    ) { destination ->
+        val source = pendingSaveFile
+        pendingSaveFile = null
+        if (destination != null && source?.isFile == true) {
+            scope.launch {
+                val saved = withContext(Dispatchers.IO) {
+                    runCatching {
+                        val output = context.contentResolver.openOutputStream(destination, "w")
+                            ?: error("No output stream for selected destination")
+                        output.use { target -> source.inputStream().use { input -> input.copyTo(target) } }
+                    }.isSuccess
+                }
+                Toast.makeText(
+                    context,
+                    if (saved) R.string.npmorphe_downloaded_apk_saved else R.string.npmorphe_downloaded_apk_save_failed,
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+    }
     // Every check below still runs against the full set: an APK already on the device stays
     // usable whatever the experimental toggle says, it is only the picker that narrows
     val offeredVersions = remember(compatibleVersions) { compatibleVersions.offered() }
@@ -175,6 +217,16 @@ internal fun DialogHostScope.ApkAvailabilityDialog(
             verticalArrangement = Arrangement.spacedBy(Defaults.SpaceLarge),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            downloadedBaseApk?.takeIf { it.file.isFile && it.file.length() > 0L }?.let { apk ->
+                DownloadedBaseApkCard(
+                    apk = apk,
+                    onUse = onUseDownloaded,
+                    onSave = {
+                        pendingSaveFile = apk.file
+                        saveApkLauncher.launch(apk.file.name)
+                    }
+                )
+            }
             if (isExpertMode && offeredVersions.isNotEmpty()) {
                 // Expert mode: selectable version list, asked for in the singular when it holds one
                 Text(
@@ -295,6 +347,59 @@ internal fun DialogHostScope.ApkAvailabilityDialog(
             }
         }
     }
+}
+
+@Composable
+private fun DownloadedBaseApkCard(
+    apk: DownloadedBaseApk,
+    onUse: () -> Unit,
+    onSave: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(Defaults.CornerLarge),
+        color = MaterialTheme.colorScheme.surfaceColorAtElevation(2.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(15.dp),
+            verticalArrangement = Arrangement.spacedBy(Defaults.SpaceSmall)
+        ) {
+            Text(
+                text = stringResource(R.string.npmorphe_downloaded_apk_title),
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = stringResource(
+                    R.string.npmorphe_downloaded_apk_info,
+                    apk.file.name,
+                    readableApkSize(apk.file.length()),
+                    apk.requestedVersion?.takeIf(String::isNotBlank) ?: "—"
+                ),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(Defaults.SpaceSmall),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Button(onClick = onUse, modifier = Modifier.weight(1f)) {
+                    Text(stringResource(R.string.npmorphe_downloaded_apk_use))
+                }
+                TextButton(onClick = onSave) {
+                    Text(stringResource(R.string.npmorphe_downloaded_apk_save))
+                }
+            }
+        }
+    }
+}
+
+private fun readableApkSize(bytes: Long): String = if (bytes >= 1024L * 1024L) {
+    String.format(Locale.getDefault(), "%.1f MB", bytes / (1024.0 * 1024.0))
+} else {
+    String.format(Locale.getDefault(), "%.0f KB", bytes / 1024.0)
 }
 
 /**

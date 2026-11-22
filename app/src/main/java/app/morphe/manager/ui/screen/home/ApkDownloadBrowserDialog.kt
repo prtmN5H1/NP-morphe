@@ -17,6 +17,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import app.morphe.manager.ui.screen.shared.DialogHostScope
+import java.io.File
 
 /** Launches the full-window browser Activity and forwards a completed APK download to its caller. */
 @Composable
@@ -35,7 +36,9 @@ internal fun DialogHostScope.ApkDownloadBrowserDialog(
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             val data = result.data
-            val uri = data?.getStringExtra(InAppBrowserActivity.EXTRA_RESULT_URI)?.let(Uri::parse)
+            val filePath = data?.getStringExtra(InAppBrowserActivity.EXTRA_RESULT_FILE_PATH)
+            val uri = filePath?.let { Uri.fromFile(File(it)) }
+                ?: data?.getStringExtra(InAppBrowserActivity.EXTRA_RESULT_URI)?.let(Uri::parse)
             val url = data?.getStringExtra(InAppBrowserActivity.EXTRA_RESULT_URL)
             if (uri != null && !url.isNullOrBlank()) {
                 currentOnApkDownloaded(

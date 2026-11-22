@@ -5,6 +5,7 @@
 
 package app.morphe.manager.ui.screen.home
 
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.selection.selectableGroup
@@ -19,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -253,26 +255,44 @@ private fun DialogHostScope.PatchFlowDialog(
         }
 
         // Dialog 1: APK availability
-        HomeDialog.ApkAvailability -> ApkAvailabilityDialog(
-            appName = (session ?: return).appName,
-            packageName = session.packageName,
-            recommendedVersion = session.recommendedVersion,
-            compatibleVersions = session.compatibleVersions,
-            selectedDownloadVersion = session.selectedVersion,
-            onVersionSelect = flow::selectVersion,
-            usingMountInstall = flow.usingMountInstall,
-            stockAppInstalled = session.stockAppInstalled == true,
-            isExpertMode = homeViewModel.prefs.useExpertMode.getBlocking(),
-            savedApkInfo = session.savedApk,
-            installedApkInfo = session.installedApk,
-            installedAppVersion = session.installedVersion,
-            hiddenSourceCount = session.hiddenSources,
-            onDismiss = flow::backFromApkSource,
-            onHaveApk = storagePickerLauncher,
-            onNeedApk = { apkDownloadHelpers.showInstructions(flow::showDownloadInstructions) },
-            onUseSaved = flow::handleSavedApkSelection,
-            onUseInstalled = flow::handleInstalledApkSelection
-        )
+        HomeDialog.ApkAvailability -> {
+            val activeSession = session ?: return
+            val cachedBaseApk = InAppBrowserActivity.findLatestDownloadedBaseApk(
+                LocalContext.current,
+                activeSession.packageName,
+                activeSession.selectedVersion?.target?.version
+            )
+            ApkAvailabilityDialog(
+                appName = activeSession.appName,
+                packageName = activeSession.packageName,
+                recommendedVersion = activeSession.recommendedVersion,
+                compatibleVersions = activeSession.compatibleVersions,
+                selectedDownloadVersion = activeSession.selectedVersion,
+                onVersionSelect = flow::selectVersion,
+                usingMountInstall = flow.usingMountInstall,
+                stockAppInstalled = activeSession.stockAppInstalled == true,
+                isExpertMode = homeViewModel.prefs.useExpertMode.getBlocking(),
+                savedApkInfo = activeSession.savedApk,
+                downloadedBaseApk = cachedBaseApk,
+                installedApkInfo = activeSession.installedApk,
+                installedAppVersion = activeSession.installedVersion,
+                hiddenSourceCount = activeSession.hiddenSources,
+                onDismiss = flow::backFromApkSource,
+                onHaveApk = storagePickerLauncher,
+                onNeedApk = { apkDownloadHelpers.showInstructions(flow::showDownloadInstructions) },
+                onUseSaved = flow::handleSavedApkSelection,
+                onUseDownloaded = {
+                    cachedBaseApk?.let { downloaded ->
+                        flow.handleBrowserApkDownloaded(
+                            Uri.fromFile(downloaded.file),
+                            downloaded.sourceUrl.orEmpty(),
+                            downloadManagerId = null
+                        )
+                    }
+                },
+                onUseInstalled = flow::handleInstalledApkSelection
+            )
+        }
 
         // Dialog 2: Download instructions
         HomeDialog.DownloadInstructions -> {
@@ -310,7 +330,7 @@ private fun DialogHostScope.PatchFlowDialog(
                         flow.handleBrowserApkDownloaded(
                             uri = uri,
                             downloadUrl = downloadUrl,
-                            downloadManagerId = downloadId.takeUnless { permanent },
+                            downloadManagerId = downloadId.takeIf { it >= 0L && !permanent },
                         )
                     }
                 )

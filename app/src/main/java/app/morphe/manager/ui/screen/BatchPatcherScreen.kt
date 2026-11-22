@@ -369,13 +369,16 @@ fun BatchPatcherScreen(
                     DialogHost(target = inAppBrowserUrl) { url ->
                         ApkDownloadBrowserDialog(
                             initialUrl = url,
+                            appName = search.item.appName,
+                            packageName = search.item.packageName,
+                            requestedVersion = search.version,
                             onDismiss = { inAppBrowserUrl = null },
                             onApkDownloaded = { uri, downloadUrl, downloadId, permanent ->
                                 inAppBrowserUrl = null
                                 viewModel.handleBrowserApkDownloaded(
                                     uri = uri,
                                     downloadSourceUrl = downloadUrl,
-                                    downloadManagerId = downloadId.takeUnless { permanent }
+                                    downloadManagerId = downloadId.takeIf { it >= 0L && !permanent }
                                 )
                             }
                         )

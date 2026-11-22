@@ -58,6 +58,7 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config merge.ours.driver true
           sync_requested="${SYNC_UPSTREAM:-true}"
           force_build="${FORCE_BUILD:-false}"
           upstream_tag=""
@@ -205,6 +206,14 @@ jobs:
             fi
 
             if [[ "$upstream_tag" == "$last_synced_tag" && "$force_build" != "true" ]]; then
+              if [[ -f .github/upstream-sync-blocked-tag ]]; then
+                rm .github/upstream-sync-blocked-tag
+                if git ls-files --error-unmatch .github/upstream-sync-blocked-tag > /dev/null 2>&1; then
+                  git add -u -- .github/upstream-sync-blocked-tag
+                  git commit -m "chore: clear stale upstream conflict marker"
+                  git push origin HEAD:main
+                fi
+              fi
               echo "Upstream is still at $upstream_tag, already synced."
               echo "build=false" >> "$GITHUB_OUTPUT"
               exit 0
@@ -236,43 +245,77 @@ jobs:
                   merge_status=$?
                   if [[ "$merge_status" -eq 0 ]]; then merge_status=1; fi
                   conflict_files="$(git diff --name-only --diff-filter=U || true)"
+                  auto_resolved=""
+                  while IFS= read -r path; do
+                    [[ -n "$path" ]] || continue
+                    case "$path" in
+                      app-release.json|app/google-services.json|app/src/main/res/values/npmorphe_strings.xml|.github/workflows/upstream-sync*|.github/workflows/upstream-sync-release.yml)
+                        if git checkout --ours -- "$path" && git add -- "$path"; then
+                          auto_resolved+="${path}"$'\n'
+                          echo "Auto-resolved fork-owned file with ours: $path"
+                        else
+                          echo "::warning::Could not auto-resolve allowlisted path: $path"
+                        fi
+                        ;;
+                      *)
+                        echo "Retaining upstream conflict for review: $path"
+                        ;;
+                    esac
+                  done <<< "$conflict_files"
+
+                  remaining_conflicts="$(git diff --name-only --diff-filter=U || true)"
                   merge_details="$(cat "$RUNNER_TEMP/upstream-merge.log" 2>/dev/null || true)"
-                  git merge --abort || true
-
-                  conflict_report="$RUNNER_TEMP/upstream-conflict-report.md"
-                  {
-                    printf '## Upstream merge conflict: `%s`\n\n' "$upstream_tag"
-                    printf 'The merge into `%s` was aborted. No application changes or APK release were published.\n\n' "$CUSTOM_REPOSITORY"
-                    printf '### Conflicting files\n'
-                    if [[ -n "$conflict_files" ]]; then
-                      while IFS= read -r path; do printf -- '- `%s`\n' "$path"; done <<< "$conflict_files"
-                    else
-                      printf -- '- Git did not report unmerged paths; see the merge output below.\n'
-                    fi
-                    if [[ -n "$merge_details" ]]; then
-                      printf '\n### Git merge output\n```text\n%s\n```\n' "$merge_details"
-                    fi
-                    printf '\nRetry with manual `sync_upstream` after reviewing the conflicts, or run `force_build` with `sync_upstream` disabled to publish the current fork main.\n'
-                  } | tee -a "$GITHUB_STEP_SUMMARY"
-
-                  issue_title="Upstream sync conflict for ${upstream_tag}"
-                  create_issue_if_available "$issue_title" "$conflict_report"
-
-                  # Persist this tag as blocked so scheduled runs do not repeat the same conflict.
-                  # A manual sync_upstream run deliberately bypasses the block and retries it.
-                  if [[ "$blocked_tag" != "$upstream_tag" ]]; then
-                    printf '%s\n' "$upstream_tag" > .github/upstream-sync-blocked-tag
-                    git add .github/upstream-sync-blocked-tag
-                    if ! git diff --cached --quiet -- .github/upstream-sync-blocked-tag; then
-                      git commit -m "chore: record blocked upstream tag ${upstream_tag}"
-                      if ! git push origin HEAD:main; then
-                        echo "::warning::Could not persist the blocked-tag marker to main; the next scheduled run may retry this merge."
-                      fi
-                    fi
+                  merge_in_progress="false"
+                  if git rev-parse -q --verify MERGE_HEAD > /dev/null; then
+                    merge_in_progress="true"
                   fi
 
-                  echo "::error::Upstream merge failed for ${upstream_tag}; the merge was aborted. See the conflict list in the step summary."
-                  exit "$merge_status"
+                  if [[ -z "$remaining_conflicts" && "$merge_in_progress" == "true" ]]; then
+                    echo "Git reported merge conflicts, but all were in the fork-owned allowlist and have been resolved."
+                    if [[ -n "$auto_resolved" ]]; then
+                      printf 'Auto-resolved paths:\n%s\n' "$auto_resolved" | tee -a "$GITHUB_STEP_SUMMARY"
+                    fi
+                  else
+                    git merge --abort || true
+
+                    conflict_report="$RUNNER_TEMP/upstream-conflict-report.md"
+                    {
+                      printf '## Upstream merge conflict: `%s`\n\n' "$upstream_tag"
+                      printf 'The merge into `%s` was aborted. No application changes or APK release were published.\n\n' "$CUSTOM_REPOSITORY"
+                      printf '### Remaining conflicting files\n'
+                      if [[ -n "$remaining_conflicts" ]]; then
+                        while IFS= read -r path; do printf -- '- `%s`\n' "$path"; done <<< "$remaining_conflicts"
+                      elif [[ -n "$conflict_files" ]]; then
+                        while IFS= read -r path; do printf -- '- `%s` (allowlist resolution failed)\n' "$path"; done <<< "$conflict_files"
+                      else
+                        printf -- '- Git did not report unmerged paths; see the merge output below.\n'
+                      fi
+                      if [[ -n "$merge_details" ]]; then
+                        printf '\n### Git merge output\n```text\n%s\n```\n' "$merge_details"
+                      fi
+                      printf '\nRetry with manual `sync_upstream` after reviewing the conflicts, or run `force_build` with `sync_upstream` disabled to publish the current fork main.\n'
+                    } > "$conflict_report"
+                    cat "$conflict_report" | tee -a "$GITHUB_STEP_SUMMARY"
+
+                    issue_title="Upstream sync conflict for ${upstream_tag}"
+                    create_issue_if_available "$issue_title" "$conflict_report"
+
+                    # Persist this tag as blocked so scheduled runs do not repeat the same code conflict.
+                    # Manual sync_upstream deliberately retries the blocked tag.
+                    if [[ "$blocked_tag" != "$upstream_tag" ]]; then
+                      printf '%s\n' "$upstream_tag" > .github/upstream-sync-blocked-tag
+                      git add .github/upstream-sync-blocked-tag
+                      if ! git diff --cached --quiet -- .github/upstream-sync-blocked-tag; then
+                        git commit -m "chore: record blocked upstream tag ${upstream_tag}"
+                        if ! git push origin HEAD:main; then
+                          echo "::warning::Could not persist the blocked-tag marker to main; the next scheduled run may retry this merge."
+                        fi
+                      fi
+                    fi
+
+                    echo "::error::Upstream merge failed for ${upstream_tag}; the merge was aborted. See the conflict list in the step summary."
+                    exit "$merge_status"
+                  fi
                 fi
               fi
 
@@ -300,7 +343,8 @@ jobs:
               if [[ ! -f app-release.json ]]; then
                 missing_custom_state+="app-release.json: custom updater metadata file missing\n"
               fi
-              if ! grep -Fq 'MorpheCatalog' app/src/main/java/app/morphe/manager/ui/screen/sources/AddSourcePanel.kt ||
+              if ! grep -Fq 'CommunityCatalogActivity' app/src/main/java/app/morphe/manager/ui/screen/sources/AddSourcePanel.kt ||
+                 ! grep -Fq 'NPMorpheCatalog' app/src/main/java/app/morphe/manager/ui/screen/sources/CommunityCatalogActivity.kt ||
                  ! grep -Fq 'exportSourcesForShare' app/src/main/java/app/morphe/manager/domain/repository/PatchBundleRepository.kt ||
                  ! grep -Fq 'pinSourceVersion' app/src/main/java/app/morphe/manager/domain/repository/PatchBundleRepository.kt ||
                  ! grep -Fq 'importSourcesArchive' app/src/main/java/app/morphe/manager/ui/viewmodel/ImportExportViewModel.kt ||
@@ -345,11 +389,19 @@ jobs:
           path.write_text(updated)
           PY
 
+              if [[ -f .github/upstream-sync-blocked-tag ]]; then
+                rm .github/upstream-sync-blocked-tag
+                if git ls-files --error-unmatch .github/upstream-sync-blocked-tag > /dev/null 2>&1; then
+                  git add -u -- .github/upstream-sync-blocked-tag
+                fi
+              fi
+
               if git rev-parse -q --verify MERGE_HEAD > /dev/null; then
                 git add app/gradle.properties
-                git commit -m "chore: sync upstream ${upstream_tag}"
-              elif ! git diff --quiet -- app/gradle.properties; then
+                git commit --no-edit
+              elif ! git diff --quiet -- app/gradle.properties .github/upstream-sync-blocked-tag; then
                 git add app/gradle.properties
+                git add -u -- .github/upstream-sync-blocked-tag 2>/dev/null || true
                 git commit -m "chore: sync upstream ${upstream_tag}"
               fi
             fi

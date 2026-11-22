@@ -22,6 +22,9 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import app.morphe.manager.R
 import org.json.JSONArray
 import java.util.Locale
@@ -31,7 +34,6 @@ class CommunityCatalogActivity : ComponentActivity() {
     private val selectedSources = mutableListOf<String>()
     private var installedKeysJson = "[]"
     @Volatile private var queuedKeysJson = "[]"
-    @Volatile private var lastTappedSource = ""
     private var webView: WebView? = null
     private lateinit var countView: TextView
     private lateinit var queueContainer: LinearLayout
@@ -41,6 +43,7 @@ class CommunityCatalogActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         window.statusBarColor = android.graphics.Color.rgb(18, 18, 18)
         window.navigationBarColor = android.graphics.Color.rgb(18, 18, 18)
         window.decorView.systemUiVisibility = 0
@@ -62,6 +65,8 @@ class CommunityCatalogActivity : ComponentActivity() {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(android.graphics.Color.rgb(18, 18, 18))
         }
+        val statusInset = View(this)
+        root.addView(statusInset, LinearLayout.LayoutParams(-1, 0))
         val toolbar = LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(8), dp(4), dp(8), dp(4))
@@ -103,7 +108,6 @@ class CommunityCatalogActivity : ComponentActivity() {
             addJavascriptInterface(object {
                 @JavascriptInterface fun installedKeys(): String = installedKeysJson
                 @JavascriptInterface fun queuedKeys(): String = queuedKeysJson
-                @JavascriptInterface fun recordTap(value: String) { lastTappedSource = value.take(2048) }
                 @JavascriptInterface fun toggleSource(value: String) { runOnUiThread { toggleSourceOnMain(value) } }
                 @JavascriptInterface fun removeSource(value: String) { runOnUiThread { removeSourceOnMain(value) } }
             }, "NPMorpheCatalog")
@@ -136,6 +140,17 @@ class CommunityCatalogActivity : ComponentActivity() {
         root.addView(addButton, LinearLayout.LayoutParams(-1, dp(52)).apply {
             setMargins(dp(12), dp(4), dp(12), dp(8))
         })
+        val navigationInset = View(this)
+        root.addView(navigationInset, LinearLayout.LayoutParams(-1, 0))
+        ViewCompat.setOnApplyWindowInsetsListener(root) { _, windowInsets ->
+            val bars = windowInsets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+            )
+            statusInset.layoutParams = statusInset.layoutParams.apply { height = bars.top }
+            navigationInset.layoutParams = navigationInset.layoutParams.apply { height = bars.bottom }
+            windowInsets
+        }
+        root.post { ViewCompat.requestApplyInsets(root) }
         return root
     }
 
@@ -170,9 +185,7 @@ class CommunityCatalogActivity : ComponentActivity() {
             row.addView(actionText("×", getString(R.string.remove)) { removeSourceOnMain(url) })
             queueContainer.addView(row, LinearLayout.LayoutParams(-1, dp(40)))
         }
-        addButton.text = if (selectedSources.size > 1) {
-            "Add " + selectedSources.size + " sources"
-        } else getString(R.string.add)
+        addButton.text = getString(R.string.npmorphe_catalog_add_selected, selectedSources.size)
         addButton.isEnabled = selectedSources.isNotEmpty()
         queueScroll.visibility = if (selectedSources.isEmpty()) View.GONE else View.VISIBLE
         queueScroll.post { queueScroll.fullScroll(View.FOCUS_DOWN) }
@@ -209,33 +222,36 @@ class CommunityCatalogActivity : ComponentActivity() {
     }
 
     private fun handleTopLevel(uri: Uri): Boolean {
-        if (uri.scheme.equals("morphe", ignoreCase = true)) {
-            val tapped = lastTappedSource.also { lastTappedSource = "" }
-            toggleSourceOnMain(tapped.ifBlank {
-                uri.getQueryParameter("url")
-                    ?: uri.getQueryParameter("github")?.let { "https://github.com/" + it }
-                    ?: uri.getQueryParameter("repo")?.let { "https://github.com/" + it }
-                    ?: uri.toString()
-            })
+        val scheme = uri.scheme?.lowercase(Locale.ROOT)
+        val addSourceUrl = parseMorpheAddSource(uri.toString())
+        if (scheme == "morphe") {
+            addSourceUrl?.let(::toggleSourceOnMain)
+            return true
+        }
+        if (addSourceUrl != null) {
+            toggleSourceOnMain(addSourceUrl)
             return true
         }
         val host = uri.host?.lowercase(Locale.ROOT).orEmpty()
-        val scheme = uri.scheme?.lowercase(Locale.ROOT)
         return !(scheme in setOf("http", "https") &&
             (host == COMMUNITY_HOST || host.endsWith("." + COMMUNITY_HOST)))
     }
 
     private fun catalogJavascript(): String = """
       (function(){
-        function source(v){try{if(!v)return null;v=String(v).trim();if(/^[\w.-]+\/[\w.-]+$/.test(v))return 'https://github.com/'+v;if(v.indexOf('intent://')===0)v='https://'+v.substring(9).split('#Intent;')[0];if(/^morphe:\/\//i.test(v)){var d=new URL(v),r=d.searchParams.get('url')||d.searchParams.get('github')||d.searchParams.get('repo');if(r)v=r.indexOf('://')>=0?r:'https://github.com/'+r.replace(/^\/+|\/+$/g,'');}var u=new URL(v,location.href),h=u.hostname.toLowerCase();if((h==='morphe-patches.software'||h.endsWith('.morphe-patches.software')||h==='morphe.software'||h.endsWith('.morphe.software'))&&u.pathname==='/add-source'){var q=u.searchParams.get('github')||u.searchParams.get('gitlab');if(q)return (u.searchParams.has('gitlab')?'https://gitlab.com/':'https://github.com/')+q.replace(/^\/+|\/+$/g,'');}if(h==='github.com'||h==='raw.githubusercontent.com')return 'https://github.com/'+u.pathname.split('/').filter(Boolean).slice(0,2).join('/');if(h==='api.github.com'&&u.pathname.indexOf('/repos/')===0)return 'https://github.com/'+u.pathname.split('/').filter(Boolean).slice(1,3).join('/');return u.href;}catch(e){return null;}}
-        function keys(v){var s=source(v);if(!s)return[];try{var u=new URL(s),h=u.hostname.toLowerCase(),p=u.pathname.replace(/\/+$/,'').replace(/\.git$/i,''),a=['url:'+u.protocol.toLowerCase()+'//'+h+p+u.search],x=p.split('/').filter(Boolean),g=null;if(h==='github.com'||h==='raw.githubusercontent.com')g=x.slice(0,2).join('/');if(h==='api.github.com'&&x[0]==='repos')g=x.slice(1,3).join('/');if(g&&g.indexOf('/')>0)a.push('gh:'+g.toLowerCase().replace(/\.git$/i,''));return a;}catch(e){return[];}}
-        function card(e){for(var n=e,i=0;n&&i<7;i++,n=n.parentElement)if(n.matches&&(n.matches('article,li,[data-testid*="card" i]')||/card|bundle/i.test(n.className||'')))return n;return e.parentElement||e;}
-        function candidates(e){var c=card(e),v=[];[e,c].forEach(function(n){if(!n||!n.getAttribute)return;['href','data-url','data-source-url','data-github','data-repo','data-source','data-bundle-url'].forEach(function(k){var x=n.getAttribute(k);if(x)v.push(x);});});if(c&&c.querySelectorAll)c.querySelectorAll('a[href],[data-url],[data-source-url],[data-github],[data-repo]').forEach(function(n){['href','data-url','data-source-url','data-github','data-repo'].forEach(function(k){var x=n.getAttribute(k);if(x)v.push(x);});});var t=(c&&c.innerText||e.innerText||'').match(/\b[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\b/g)||[];return v.concat(t);}
-        function isAdd(e){var l=(e.innerText||e.textContent||'').trim(),a=(e.getAttribute('aria-label')||'').trim(),h=e.getAttribute('href')||'',add=/^\+?\s*add(\s+to\s+morphe)?\s*$/i;return /morphe:\/\//i.test(h)||add.test(l)||add.test(a)||!!e.dataset.npState&&/^(already added|selected)$/i.test(l||a);}
+        function canonical(v){try{v=String(v||'').trim();if(!v)return null;if(/^[\w.-]+\/[\w.-]+$/.test(v))v='https://github.com/'+v;var u=new URL(v,location.href),h=u.hostname.toLowerCase(),p=u.pathname.split('/').filter(Boolean);if(h==='github.com'||h==='raw.githubusercontent.com')return 'https://github.com/'+p.slice(0,2).join('/').replace(/\.git$/i,'');if(h==='api.github.com'&&p[0]==='repos')return 'https://github.com/'+p.slice(1,3).join('/').replace(/\.git$/i,'');if((h==='morphe.software'||h==='www.morphe.software'||h==='morphe-patches.software'||h.endsWith('.morphe-patches.software'))&&p.join('/').replace(/\/+$/,'')==='add-source')return addTarget(u);u.hash='';return u.protocol+'//'+u.host+u.pathname.replace(/\/+$/,'')+u.search;}catch(e){return null;}}
+        function addTarget(u){var q=u.searchParams.get('github')||u.searchParams.get('repo')||u.searchParams.get('url');if(!q)return null;return canonical(q);}
+        function addLink(v){try{var u=new URL(String(v||''),location.href),h=u.hostname.toLowerCase(),p=u.pathname.replace(/\/+$/,'');if(u.protocol.toLowerCase()==='morphe:')return addTarget(u);if(p==='/add-source'&&(h==='morphe.software'||h==='www.morphe.software'||h==='morphe-patches.software'||h.endsWith('.morphe-patches.software')))return addTarget(u);return null;}catch(e){return null;}}
+        function repoLink(v){var s=addLink(v);if(s)return s;try{var u=new URL(String(v||''),location.href),h=u.hostname.toLowerCase();if(h==='github.com'||h==='raw.githubusercontent.com'||h==='api.github.com'||h==='gitlab.com')return canonical(u.href);}catch(e){}return null;}
+        function keys(v){var s=canonical(v);if(!s)return[];try{var u=new URL(s),h=u.hostname.toLowerCase(),p=u.pathname.replace(/\/+$/,'').replace(/\.git$/i,''),a=['url:'+u.protocol.toLowerCase()+'//'+h+p+u.search];if(h==='github.com'){var x=p.split('/').filter(Boolean);if(x.length>=2)a.push('gh:'+x.slice(0,2).join('/').toLowerCase());}return a;}catch(e){return[];}}
+        function bundleCard(e){for(var n=e.parentElement,i=0;n&&i<8;i++,n=n.parentElement){var c=(n.className&&String(n.className))||'';var test=n.getAttribute&&n.getAttribute('data-testid')||'';if(n.hasAttribute&& (n.hasAttribute('data-bundle')||n.hasAttribute('data-bundle-id'))||/bundle/i.test(c)||/bundle/i.test(test))return n;}return null;}
+        function normalizedLabel(e){var t=(e.innerText||e.textContent||'').replace(/\s+/g,' ').trim().toLowerCase();if(t.indexOf('add add to morphe')===0)t=t.replace(/^add\s+/,'');return t;}
+        function explicitAdd(e){var h=e.getAttribute('href')||'';if(addLink(h)||/^morphe:\/\//i.test(h))return true;return ['add to morphe','already added','selected'].indexOf(normalizedLabel(e))>=0;}
+        function sourceFor(e){var h=e.getAttribute('href')||'';var direct=repoLink(h);if(direct)return direct;var attrs=['data-url','data-source-url','data-github','data-repo','data-source','data-bundle-url'];for(var i=0;i<attrs.length;i++){var v=e.getAttribute(attrs[i]);var a=addLink(v)||canonical(v);if(a)return a;}var c=bundleCard(e);if(!c)return null;var links=c.querySelectorAll('a[href]');for(var j=0;j<links.length;j++){var target=repoLink(links[j].getAttribute('href'));if(target)return target;}var text=(c.innerText||'').match(/\b[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\b/g)||[];for(var k=0;k<text.length;k++){var slug=text[k].replace(/\.git$/i,'');if(slug.indexOf('/')>0)return canonical(slug);}return null;}
         function restore(e){if(e.dataset.npHtml)e.innerHTML=e.dataset.npHtml;delete e.dataset.npHtml;delete e.dataset.npState;delete e.dataset.npUrl;e.removeAttribute('aria-disabled');['opacity','outline','border-radius','background-color','pointer-events'].forEach(function(k){e.style.removeProperty(k);});if('disabled'in e)e.disabled=false;}
-        function decorate(){var i=[],q=[];try{i=JSON.parse(NPMorpheCatalog.installedKeys());}catch(e){}try{q=JSON.parse(NPMorpheCatalog.queuedKeys());}catch(e){}document.querySelectorAll('button,a,[role="button"]').forEach(function(e){if(!isAdd(e))return;var k=[],s=null;candidates(e).forEach(function(v){var n=keys(v);if(n.length&&(!s||n.some(function(x){return x.indexOf('gh:')===0;})))s=source(v);k=k.concat(n);});var state=k.some(function(x){return i.indexOf(x)>=0;})?'added':(k.some(function(x){return q.indexOf(x)>=0;})?'queued':'new');if(state==='new'){if(e.dataset.npState)restore(e);e.dataset.npUrl=s||'';return;}if(!e.dataset.npHtml)e.dataset.npHtml=e.innerHTML;e.dataset.npState=state;e.dataset.npUrl=s||'';var label=state==='added'?'Already added':'Selected';if((e.textContent||'').trim()!==label)e.textContent=label;if((e.getAttribute('aria-label')||'')!==label)e.setAttribute('aria-label',label);if(state==='added'){e.setAttribute('aria-disabled','true');e.style.opacity='.55';e.style.pointerEvents='none';if('disabled'in e)e.disabled=true;}else{e.style.outline='2px solid #4caf50';e.style.borderRadius='6px';e.style.backgroundColor='rgba(76,175,80,.16)';if('disabled'in e)e.disabled=false;}});}
+        function decorate(){var i=[],q=[];try{i=JSON.parse(NPMorpheCatalog.installedKeys());}catch(e){}try{q=JSON.parse(NPMorpheCatalog.queuedKeys());}catch(e){}document.querySelectorAll('a,button').forEach(function(e){if(!explicitAdd(e))return;var s=sourceFor(e);if(!s)return;var k=keys(s),state=k.some(function(x){return i.indexOf(x)>=0;})?'added':(k.some(function(x){return q.indexOf(x)>=0;})?'queued':'new');if(state==='new'){if(e.dataset.npState)restore(e);e.dataset.npUrl=s;return;}if(!e.dataset.npHtml)e.dataset.npHtml=e.innerHTML;e.dataset.npState=state;e.dataset.npUrl=s;var label=state==='added'?'Already added':'Selected';if(normalizedLabel(e)!==label.toLowerCase())e.textContent=label;if((e.getAttribute('aria-label')||'')!==label)e.setAttribute('aria-label',label);if(state==='added'){e.setAttribute('aria-disabled','true');e.style.opacity='.55';e.style.pointerEvents='none';if('disabled'in e)e.disabled=true;}else{e.style.outline='2px solid #4caf50';e.style.borderRadius='6px';e.style.backgroundColor='rgba(76,175,80,.16)';if('disabled'in e)e.disabled=false;}});}
         var busy=false;function schedule(){if(busy)return;busy=true;requestAnimationFrame(function(){busy=false;decorate();});}window.__npmorpheCatalogRefresh=schedule;
-        if(!window.__npmorpheCatalogClick){window.__npmorpheCatalogClick=function(ev){var e=ev.target&&ev.target.closest&&ev.target.closest('button,a,[role="button"]');if(!e||!isAdd(e))return;var s=e.dataset.npUrl||candidates(e).map(source).find(Boolean);if(!s)return;if(e.dataset.npState==='added'){ev.preventDefault();ev.stopImmediatePropagation();return;}if(e.dataset.npState==='queued'){ev.preventDefault();ev.stopImmediatePropagation();NPMorpheCatalog.removeSource(s);setTimeout(schedule,60);return;}NPMorpheCatalog.recordTap(s);};document.addEventListener('click',window.__npmorpheCatalogClick,true);}
+        if(!window.__npmorpheCatalogClick){window.__npmorpheCatalogClick=function(ev){var e=ev.target&&ev.target.closest&&ev.target.closest('a,button');if(!e||!explicitAdd(e))return;var s=e.dataset.npUrl||sourceFor(e);if(!s)return;ev.preventDefault();ev.stopImmediatePropagation();if(e.dataset.npState==='added')return;if(e.dataset.npState==='queued')NPMorpheCatalog.removeSource(s);else NPMorpheCatalog.toggleSource(s);setTimeout(schedule,50);};document.addEventListener('click',window.__npmorpheCatalogClick,true);}
         decorate();if(window.__npmorpheCatalogObserver)window.__npmorpheCatalogObserver.disconnect();window.__npmorpheCatalogObserver=new MutationObserver(schedule);window.__npmorpheCatalogObserver.observe(document.documentElement,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['href','data-url','data-source-url','data-github','data-repo','aria-label']});
       })();
     """.trimIndent()
@@ -281,16 +297,39 @@ class CommunityCatalogActivity : ComponentActivity() {
 private fun keysJson(values: List<String>): String =
     JSONArray(values.flatMap(::canonicalKeys).distinct().sorted()).toString()
 
-private fun repositoryUrl(value: String): String? {
+private fun parseMorpheAddSource(value: String): String? {
+    val uri = runCatching { Uri.parse(value.trim()) }.getOrNull() ?: return null
+    val scheme = uri.scheme?.lowercase(Locale.ROOT)
+    val host = uri.host?.lowercase(Locale.ROOT).orEmpty()
+    val path = uri.path.orEmpty().trimEnd('/')
+    val isDeepLink = scheme == "morphe"
+    val isWebAddLink = (scheme == "http" || scheme == "https") &&
+        (host == "morphe.software" || host == "www.morphe.software" ||
+            host == "morphe-patches.software" || host.endsWith(".morphe-patches.software")) &&
+        path == "/add-source"
+    if (!isDeepLink && !isWebAddLink) return null
+    val target = uri.getQueryParameter("github")
+        ?: uri.getQueryParameter("repo")
+        ?: uri.getQueryParameter("url")
+        ?: return null
+    val cleaned = target.trim()
+    Regex("^([\\w.-]+)/([\\w.-]+)$").matchEntire(cleaned)?.let {
+        return "https://github.com/" + it.groupValues[1] + "/" + it.groupValues[2].removeSuffix(".git")
+    }
+    val targetUri = runCatching { Uri.parse(cleaned) }.getOrNull() ?: return null
+    githubSlug(targetUri)?.let { return "https://github.com/" + it }
+    return genericRepositoryUrl(cleaned)
+}
+
+private fun repositoryUrl(value: String): String? =
+    parseMorpheAddSource(value) ?: genericRepositoryUrl(value)
+
+private fun genericRepositoryUrl(value: String): String? {
     val raw = value.trim()
     if (raw.isBlank()) return null
     val normalized = if (raw.startsWith("intent://")) "https://" + raw.removePrefix("intent://").substringBefore("#Intent;") else raw
     val uri = runCatching { Uri.parse(normalized) }.getOrNull() ?: return null
     val host = uri.host?.lowercase(Locale.ROOT) ?: return null
-    if ((host == "morphe-patches.software" || host.endsWith(".morphe-patches.software") || host == "morphe.software" || host.endsWith(".morphe.software")) && uri.path == "/add-source") {
-        uri.getQueryParameter("github")?.trim('/')?.takeIf(String::isNotBlank)?.let { return "https://github.com/" + it }
-        uri.getQueryParameter("gitlab")?.trim('/')?.takeIf(String::isNotBlank)?.let { return "https://gitlab.com/" + it }
-    }
     githubSlug(uri)?.let { return "https://github.com/" + it }
     if (host == "gitlab.com" && uri.pathSegments.size >= 2) return "https://gitlab.com/" + uri.pathSegments.take(2).joinToString("/")
     return normalized.takeIf { uri.scheme == "http" || uri.scheme == "https" }
@@ -298,21 +337,8 @@ private fun repositoryUrl(value: String): String? {
 
 private fun canonicalKeys(value: String): Set<String> {
     val original = runCatching { Uri.parse(value) }.getOrNull() ?: return emptySet()
-    val originalHost = original.host?.lowercase(Locale.ROOT).orEmpty()
-    val isCommunityAddLink = original.path == "/add-source" &&
-        (originalHost == "morphe-patches.software" || originalHost.endsWith(".morphe-patches.software") ||
-            originalHost == "morphe.software" || originalHost.endsWith(".morphe.software"))
-    val resolved = when {
-        original.scheme.equals("morphe", ignoreCase = true) -> {
-            val source = original.getQueryParameter("url")
-                ?: original.getQueryParameter("github")?.let { "https://github.com/" + it }
-                ?: original.getQueryParameter("repo")?.let { "https://github.com/" + it }
-            source?.let { repositoryUrl(it) ?: it } ?: value
-        }
-        value.startsWith("intent://") || isCommunityAddLink ->
-            repositoryUrl(value) ?: value
-        else -> value
-    }
+    val resolved = parseMorpheAddSource(value)
+        ?: if (value.startsWith("intent://")) repositoryUrl(value) ?: value else value
     val uri = runCatching { Uri.parse(resolved) }.getOrNull() ?: return emptySet()
     val scheme = uri.scheme?.lowercase(Locale.ROOT)
     val host = uri.host?.lowercase(Locale.ROOT)

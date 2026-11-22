@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -31,6 +32,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import app.morphe.manager.R
 import app.morphe.manager.domain.repository.PatchHistoryEntry
 import app.morphe.manager.ui.screen.shared.DialogHostScope
@@ -144,8 +146,8 @@ internal fun PatchHistoryContent(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(
-                    modifier = Modifier.padding(Defaults.SpaceMedium),
-                    verticalArrangement = Arrangement.spacedBy(Defaults.SpaceExtraSmall)
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
@@ -163,8 +165,14 @@ internal fun PatchHistoryContent(
                             Icon(MaterialSymbols.Rounded.Content_copy, contentDescription = stringResource(R.string.npmorphe_copy))
                         }
                     }
-                    lines.forEach { (label, value) ->
-                        HistoryLine(label, value)
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outlineVariant,
+                        modifier = Modifier.padding(vertical = 1.dp)
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        lines.forEach { (label, value) ->
+                            HistoryLine(label, value)
+                        }
                     }
                 }
             }
@@ -182,7 +190,7 @@ private fun HistoryLine(label: String, value: String) {
             }
             append(value)
         },
-        style = MaterialTheme.typography.bodySmall,
+        style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 21.sp),
         color = MaterialTheme.colorScheme.onSurfaceVariant
     )
 }
