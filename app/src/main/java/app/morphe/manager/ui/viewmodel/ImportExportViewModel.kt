@@ -27,7 +27,7 @@ import app.morphe.manager.domain.backup.AutoBackup
 import app.morphe.manager.domain.backup.SettingsExporter
 import app.morphe.manager.domain.backup.SettingsExporter.Companion.json
 import app.morphe.manager.domain.backup.SettingsExporter.Companion.settingsJson
-import app.morphe.manager.domain.bundles.SourceUrl
+import app.morphe.manager.util.SourceUrl
 import app.morphe.manager.domain.manager.HomeAppButtonPreferences
 import app.morphe.manager.domain.manager.KeystoreManager
 import app.morphe.manager.domain.manager.PreferencesManager
