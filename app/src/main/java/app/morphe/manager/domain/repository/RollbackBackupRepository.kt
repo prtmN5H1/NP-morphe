@@ -9,9 +9,12 @@ import android.app.Application
 import android.content.pm.PackageInfo
 import android.util.Log
 import app.morphe.manager.domain.installer.SessionApkFile
+import app.morphe.manager.domain.manager.PreferencesManager
+import app.morphe.manager.service.RollbackBackupPromptNotifier
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
@@ -26,6 +29,7 @@ data class RollbackBackup(
     val versionCode: Long,
     val backedUpAt: Long,
     val apkFileNames: List<String>,
+    val sizeBytes: Long = 0L,
 ) {
     val isSplitInstall: Boolean get() = apkFileNames.size > 1
 }
@@ -33,14 +37,21 @@ data class RollbackBackup(
 /** Keeps one durable pre-overwrite APK set per package in Morphe's private files. */
 class RollbackBackupRepository(
     private val app: Application,
-    private val storageStatsRepository: StorageStatsRepository
+    private val storageStatsRepository: StorageStatsRepository,
+    private val preferences: PreferencesManager
 ) {
     private val root = File(app.noBackupFilesDir, "rollback-backups")
     private val _backups = MutableStateFlow<List<RollbackBackup>>(emptyList())
     val backups = _backups.asStateFlow()
+    private val _cleanupPendingPackages = MutableStateFlow<Set<String>>(emptySet())
+    val cleanupPendingPackages: StateFlow<Set<String>> = _cleanupPendingPackages.asStateFlow()
+    private val _cleanupBannerPackages = MutableStateFlow<Set<String>>(emptySet())
+    val cleanupBannerPackages: StateFlow<Set<String>> = _cleanupBannerPackages.asStateFlow()
 
     suspend fun refresh() = withContext(Dispatchers.IO) {
         _backups.value = readBackups()
+        _cleanupPendingPackages.value = preferences.rollbackCleanupPendingPackages.get()
+        _cleanupBannerPackages.value = preferences.rollbackCleanupBannerPackages.get()
     }
 
     suspend fun get(packageName: String): RollbackBackup? = withContext(Dispatchers.IO) {
@@ -85,7 +96,8 @@ class RollbackBackupRepository(
                     versionName = packageInfo.versionName,
                     versionCode = versionCode,
                     backedUpAt = System.currentTimeMillis(),
-                    apkFileNames = sourceFiles.map { it.first }
+                    apkFileNames = sourceFiles.map { it.first },
+                    sizeBytes = sourceFiles.sumOf { (_, file) -> file.length() }
                 )
                 writeMetadata(File(temp, METADATA_FILE), backup)
 
@@ -95,6 +107,7 @@ class RollbackBackupRepository(
                     error("Could not save rollback backup")
                 }
                 previous.deleteRecursively()
+                resolveCleanupPrompt(packageName)
                 _backups.value = readBackups()
                 storageStatsRepository.refresh()
                 backup
@@ -115,14 +128,52 @@ class RollbackBackupRepository(
 
     suspend fun delete(packageName: String) = withContext(Dispatchers.IO) {
         directoryFor(packageName).deleteRecursively()
+        resolveCleanupPrompt(packageName)
         _backups.value = readBackups()
         storageStatsRepository.refresh()
     }
 
     suspend fun clear() = withContext(Dispatchers.IO) {
         root.deleteRecursively()
+        _cleanupPendingPackages.value.forEach { RollbackBackupPromptNotifier.cancel(app, it) }
+        preferences.rollbackCleanupPendingPackages.update(emptySet())
+        preferences.rollbackCleanupBannerPackages.update(emptySet())
+        _cleanupPendingPackages.value = emptySet()
+        _cleanupBannerPackages.value = emptySet()
         _backups.value = emptyList()
         storageStatsRepository.refresh()
+    }
+
+    suspend fun registerCleanupPrompt(packageName: String): Boolean = withContext(Dispatchers.IO) {
+        if (readBackup(directoryFor(packageName)) == null) return@withContext false
+        val pending = preferences.rollbackCleanupPendingPackages.get() + packageName
+        preferences.rollbackCleanupPendingPackages.update(pending)
+        val banners = preferences.rollbackCleanupBannerPackages.get() - packageName
+        preferences.rollbackCleanupBannerPackages.update(banners)
+        _cleanupPendingPackages.value = pending
+        _cleanupBannerPackages.value = banners
+        true
+    }
+
+    suspend fun markCleanupPromptDismissed(packageName: String) = withContext(Dispatchers.IO) {
+        if (packageName !in preferences.rollbackCleanupPendingPackages.get()) return@withContext
+        val banners = preferences.rollbackCleanupBannerPackages.get() + packageName
+        preferences.rollbackCleanupBannerPackages.update(banners)
+        _cleanupBannerPackages.value = banners
+    }
+
+    suspend fun keepBackup(packageName: String) = withContext(Dispatchers.IO) {
+        resolveCleanupPrompt(packageName)
+    }
+
+    private suspend fun resolveCleanupPrompt(packageName: String) {
+        val pending = preferences.rollbackCleanupPendingPackages.get() - packageName
+        val banners = preferences.rollbackCleanupBannerPackages.get() - packageName
+        preferences.rollbackCleanupPendingPackages.update(pending)
+        preferences.rollbackCleanupBannerPackages.update(banners)
+        _cleanupPendingPackages.value = pending
+        _cleanupBannerPackages.value = banners
+        RollbackBackupPromptNotifier.cancel(app, packageName)
     }
 
     private fun readBackups(): List<RollbackBackup> =
@@ -142,7 +193,8 @@ class RollbackBackupRepository(
             versionName = json.optString("versionName").takeIf(String::isNotBlank),
             versionCode = json.getLong("versionCode"),
             backedUpAt = json.getLong("backedUpAt"),
-            apkFileNames = names
+            apkFileNames = names,
+            sizeBytes = names.sumOf { File(directory, it).length() }
         )
     }.onFailure { Log.w(TAG, "Could not read rollback metadata from ${directory.name}", it) }.getOrNull()
 

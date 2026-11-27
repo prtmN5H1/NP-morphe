@@ -5,6 +5,7 @@
 package app.morphe.manager.ui.screen.sources
 
 import android.net.Uri
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
@@ -72,12 +73,34 @@ class CommunityCatalogActivity : ComponentActivity() {
             setPadding(dp(8), dp(4), dp(8), dp(4))
         }
         toolbar.addView(actionText("‹", getString(R.string.back), ::finishWithSelection))
-        toolbar.addView(TextView(this).apply {
-            text = getString(R.string.sources_dialog_community)
-            textSize = 18f
-            setTextColor(android.graphics.Color.WHITE)
+        val brand = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            orientation = LinearLayout.HORIZONTAL
             setPadding(dp(8), 0, dp(8), 0)
-        }, LinearLayout.LayoutParams(0, dp(48), 1f))
+            contentDescription = getString(R.string.sources_dialog_community)
+        }
+        brand.addView(TextView(this).apply {
+            text = "Morphe"
+            textSize = 18f
+            setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+            setTextColor(android.graphics.Color.WHITE)
+            gravity = Gravity.CENTER_VERTICAL
+        })
+        brand.addView(TextView(this).apply {
+            text = "PATCHES"
+            textSize = 10f
+            setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+            setTextColor(android.graphics.Color.rgb(220, 220, 220))
+            gravity = Gravity.CENTER
+            setPadding(dp(7), dp(4), dp(7), dp(4))
+            background = GradientDrawable().apply {
+                setColor(android.graphics.Color.rgb(48, 48, 48))
+                cornerRadius = dp(10).toFloat()
+            }
+            val params = LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(8) }
+            layoutParams = params
+        })
+        toolbar.addView(brand, LinearLayout.LayoutParams(0, dp(48), 1f))
         countView = TextView(this).apply {
             textSize = 14f
             setTextColor(android.graphics.Color.LTGRAY)

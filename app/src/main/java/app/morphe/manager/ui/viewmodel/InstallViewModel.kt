@@ -24,11 +24,14 @@ import app.morphe.manager.domain.installer.*
 import app.morphe.manager.domain.repository.InstalledAppRepository
 import app.morphe.manager.domain.repository.OriginalApkRepository
 import app.morphe.manager.domain.repository.PatchHistoryRepository
+import app.morphe.manager.domain.repository.ApkDownloadManager
+import app.morphe.manager.domain.manager.DownloadAutoDeleteMode
 import app.morphe.manager.domain.repository.RollbackBackupRepository
 import app.morphe.manager.domain.manager.AfterPatching
 import app.morphe.manager.domain.manager.PreferencesManager
 import app.morphe.manager.notification.OngoingContent
 import app.morphe.manager.service.ForegroundWork
+import app.morphe.manager.service.RollbackBackupPromptNotifier
 import app.morphe.manager.ui.screen.shared.UserMessages
 import app.morphe.manager.util.*
 import kotlinx.coroutines.*
@@ -60,6 +63,7 @@ class InstallViewModel(
     private val appDataResolver: AppDataResolver,
     private val originalApkRepository: OriginalApkRepository,
     private val patchHistoryRepository: PatchHistoryRepository,
+    private val apkDownloadManager: ApkDownloadManager,
     private val rollbackBackupRepository: RollbackBackupRepository,
     private val installedAppRepository: InstalledAppRepository,
     private val applicationScope: AppCoroutineScope,
@@ -1283,8 +1287,10 @@ class InstallViewModel(
         applicationScope.launch(Dispatchers.IO) {
             val cleanupEnabled = prefs.rollbackAutoCleanupEnabled.get() &&
                     packageName !in prefs.rollbackAutoCleanupDisabledApps.get()
-            val hasBackup = rollbackBackupRepository.get(packageName) != null
-            if (cleanupEnabled && hasBackup) {
+            rollbackBackupRepository.refresh()
+            val pending = packageName in rollbackBackupRepository.cleanupPendingPackages.value
+            val alreadyBanner = packageName in rollbackBackupRepository.cleanupBannerPackages.value
+            if (cleanupEnabled && pending && !alreadyBanner && rollbackBackupRepository.get(packageName) != null) {
                 val appName = pm.getApplicationInfo(packageName)
                     ?.loadLabel(app.packageManager)
                     ?.toString()
@@ -1296,7 +1302,23 @@ class InstallViewModel(
     }
 
     fun dismissRollbackCleanupPrompt() {
+        val packageName = rollbackCleanupPromptPackage?.second ?: return
         rollbackCleanupPromptPackage = null
+        applicationScope.launch(Dispatchers.IO) { rollbackBackupRepository.markCleanupPromptDismissed(packageName) }
+    }
+
+    fun showRollbackCleanupPrompt(packageName: String) {
+        applicationScope.launch(Dispatchers.IO) {
+            if (rollbackBackupRepository.get(packageName) == null) return@launch
+            val appName = pm.getApplicationInfo(packageName)?.loadLabel(app.packageManager)?.toString()
+                ?.takeIf(String::isNotBlank) ?: packageName
+            withContext(Dispatchers.Main) { rollbackCleanupPromptPackage = appName to packageName }
+        }
+    }
+
+    fun keepRollbackBackup(packageName: String) {
+        rollbackCleanupPromptPackage = null
+        applicationScope.launch(Dispatchers.IO) { rollbackBackupRepository.keepBackup(packageName) }
     }
 
     fun clearRollbackBackup(packageName: String) {
@@ -1398,6 +1420,21 @@ class InstallViewModel(
         installedPackageName = packageName
         appDataResolver.invalidate(packageName)
         installState = InstallState.Installed(packageName)
+        pendingRollbackVerificationPackage = packageName
+        applicationScope.launch(Dispatchers.IO) {
+            val cleanupEnabled = prefs.rollbackAutoCleanupEnabled.get() &&
+                    packageName !in prefs.rollbackAutoCleanupDisabledApps.get()
+            if (cleanupEnabled && rollbackBackupRepository.registerCleanupPrompt(packageName)) {
+                val appName = pm.getApplicationInfo(packageName)?.loadLabel(app.packageManager)?.toString()
+                    ?.takeIf(String::isNotBlank) ?: packageName
+                RollbackBackupPromptNotifier.show(app, packageName, appName)
+            }
+        }
+        applicationScope.launch(Dispatchers.IO) {
+            if (prefs.downloadAutoDeleteMode.get() == DownloadAutoDeleteMode.AFTER_INSTALL) {
+                apkDownloadManager.deleteCompletedForPackage(packageName)
+            }
+        }
         pendingDownloadManagerId?.let { downloadId ->
             pendingDownloadManagerId = null
             applicationScope.launch(Dispatchers.IO) {

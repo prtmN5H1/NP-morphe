@@ -14,6 +14,7 @@ import app.morphe.manager.domain.apk.ApkSignatureCache
 import app.morphe.manager.domain.apk.LocalApkSources
 import app.morphe.manager.domain.backup.AutoBackup
 import app.morphe.manager.domain.backup.SettingsExporter
+import app.morphe.manager.domain.backup.NpmorpheBackupManager
 import app.morphe.manager.domain.batch.BatchPatchCoordinator
 import app.morphe.manager.domain.batch.BatchPlanResolver
 import app.morphe.manager.domain.bundles.AppVersionCatalog
@@ -39,6 +40,7 @@ import org.koin.dsl.module
 val managerModule = module {
     singleOf(::KeystoreManager)
     singleOf(::SettingsExporter)
+    singleOf(::NpmorpheBackupManager)
     singleOf(::AutoBackup)
     singleOf(::ApkSignatureCache)
     singleOf(::PM)

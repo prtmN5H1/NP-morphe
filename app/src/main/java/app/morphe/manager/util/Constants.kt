@@ -143,7 +143,7 @@ val KEYSTORE_MIME_TYPES = arrayOf(KEYSTORE_MIMETYPE, JKS_MIMETYPE, BKS_MIMETYPE)
 const val MPP_EXTENSION = "mpp"
 
 /** Extension of a portable source archive. */
-const val SOURCE_ARCHIVE_EXTENSION = "morphe"
+const val SOURCE_ARCHIVE_EXTENSION = "nps"
 
 const val JSON_EXTENSION = "json"
 

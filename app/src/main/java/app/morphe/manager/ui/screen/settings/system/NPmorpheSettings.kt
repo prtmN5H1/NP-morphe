@@ -8,7 +8,10 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
@@ -36,12 +39,20 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.morphe.manager.R
 import app.morphe.manager.domain.manager.APK_BROWSER_APP_DEFAULT_URL_SEPARATOR
 import app.morphe.manager.domain.manager.ApkBrowserPreference
+import app.morphe.manager.domain.manager.DownloadAutoDeleteMode
+import app.morphe.manager.domain.backup.NpmorpheBackupManager
+import app.morphe.manager.domain.backup.NpmorpheBackupContents
+import app.morphe.manager.domain.repository.BrowserDataRepository
 import app.morphe.manager.domain.repository.PatchHistoryRepository
 import app.morphe.manager.ui.screen.home.PatchHistoryDialog
 import app.morphe.manager.ui.screen.home.ApkDownloadBrowserDialog
+import app.morphe.manager.ui.screen.home.BrowserSettingsActivity
+import app.morphe.manager.ui.screen.home.DownloadedApksActivity
+import app.morphe.manager.ui.screen.home.InAppBrowserActivity
 import app.morphe.manager.ui.screen.shared.*
 import app.morphe.manager.ui.viewmodel.SettingsViewModel
 import app.morphe.manager.ui.viewmodel.StorageManagementViewModel
+import app.morphe.manager.ui.viewmodel.ImportExportViewModel
 import app.morphe.manager.util.APK_BROWSER_DEFAULT_URL
 import app.morphe.manager.util.CUSTOM_DEVELOPER_NAME
 import app.morphe.manager.util.CUSTOM_SOURCE_REPO_URL
@@ -97,17 +108,37 @@ fun NPmorpheSettings(
     val scope = rememberCoroutineScope()
     val uriHandler = LocalUriHandler.current
     val context = LocalContext.current
+    val browserDataRepository = koinInject<BrowserDataRepository>()
+    val backupManager = koinInject<NpmorpheBackupManager>()
+    val importExportViewModel = koinInject<ImportExportViewModel>()
+    val autoDeleteMode by prefs.downloadAutoDeleteMode.getAsState()
 
     var showBrowserPreference by rememberSaveable { mutableStateOf(false) }
     var showDefaultUrlEditor by rememberSaveable { mutableStateOf(false) }
     var defaultUrlDraft by rememberSaveable { mutableStateOf("") }
+    var editingDefaultPackage by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingBackup by remember { mutableStateOf<NpmorpheBackupContents?>(null) }
     var showHistory by remember { mutableStateOf(false) }
     var confirmClearHistory by remember { mutableStateOf(false) }
     var showAppDefaultsReset by rememberSaveable { mutableStateOf(false) }
-    var showStandaloneBrowser by rememberSaveable { mutableStateOf(false) }
     var showCrashLogs by rememberSaveable { mutableStateOf(false) }
     var crashLogs by remember { mutableStateOf("") }
     val crashEntries = remember(crashLogs) { parseCrashLogEntries(crashLogs) }
+
+    val exportBackupLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        if (uri != null) scope.launch {
+            runCatching { backupManager.export(uri) }
+                .onSuccess { fileName -> Toast.makeText(context, fileName, Toast.LENGTH_LONG).show() }
+                .onFailure { Toast.makeText(context, it.message ?: context.getString(R.string.npmorphe_settings_backup_failed), Toast.LENGTH_LONG).show() }
+        }
+    }
+    val importBackupLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) scope.launch {
+            runCatching { backupManager.read(uri) }
+                .onSuccess { pendingBackup = it }
+                .onFailure { Toast.makeText(context, it.message ?: context.getString(R.string.npmorphe_settings_backup_failed), Toast.LENGTH_LONG).show() }
+        }
+    }
 
     val browserPreferenceLabel = when (browserPreference) {
         ApkBrowserPreference.ASK -> stringResource(R.string.settings_system_apk_browser_ask)
@@ -170,7 +201,17 @@ fun NPmorpheSettings(
             confirmText = stringResource(R.string.save),
             confirmEnabled = defaultUrlDraft.isNotBlank(),
             onConfirm = {
-                scope.launch { prefs.apkBrowserDefaultUrl.update(defaultUrlDraft.trim()) }
+                scope.launch {
+                    val packageName = editingDefaultPackage
+                    if (packageName == null) {
+                        prefs.apkBrowserDefaultUrl.update(defaultUrlDraft.trim())
+                    } else {
+                        val prefix = packageName + APK_BROWSER_APP_DEFAULT_URL_SEPARATOR
+                        prefs.apkBrowserAppDefaultUrls.update(
+                            (prefs.apkBrowserAppDefaultUrls.get().filterNot { it.startsWith(prefix) } + (prefix + defaultUrlDraft.trim())).toSet()
+                        )
+                    }
+                }
                 showDefaultUrlEditor = false
             },
             onDismiss = { showDefaultUrlEditor = false },
@@ -207,22 +248,12 @@ fun NPmorpheSettings(
     DialogHost(visible = showAppDefaultsReset) {
         AppDialog(
             onDismissRequest = { showAppDefaultsReset = false },
-            title = stringResource(R.string.home_apk_browser_reset_default),
+            title = stringResource(R.string.npmorphe_settings_custom_urls),
             description = stringResource(R.string.npmorphe_settings_reset_app_defaults_description),
             footer = {
                 AppDialogButtonRow(
                     primaryText = stringResource(R.string.close),
-                    onPrimaryClick = { showAppDefaultsReset = false },
-                    secondaryText = stringResource(R.string.npmorphe_settings_reset_all).takeIf {
-                        browserDefaultUrl.isNotBlank() || appBrowserDefaults.isNotEmpty()
-                    },
-                    onSecondaryClick = {
-                        scope.launch {
-                            prefs.apkBrowserDefaultUrl.update("")
-                            prefs.apkBrowserAppDefaultUrls.update(emptySet())
-                        }
-                        showAppDefaultsReset = false
-                    }
+                    onPrimaryClick = { showAppDefaultsReset = false }
                 )
             }
         ) {
@@ -230,6 +261,18 @@ fun NPmorpheSettings(
                 modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(Defaults.SpaceSmall)
             ) {
+                TextButton(
+                    onClick = {
+                        scope.launch {
+                            prefs.apkBrowserDefaultUrl.update("")
+                            prefs.apkBrowserAppDefaultUrls.update(emptySet())
+                        }
+                    },
+                    enabled = browserDefaultUrl.isNotBlank() || appBrowserDefaults.isNotEmpty(),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(stringResource(R.string.npmorphe_settings_reset_all))
+                }
                 if (appBrowserDefaults.isEmpty()) {
                     Text(
                         text = stringResource(R.string.npmorphe_settings_no_app_defaults),
@@ -237,34 +280,41 @@ fun NPmorpheSettings(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                appBrowserDefaults.forEach { (packageName, url) ->
-                    SettingsItem(
-                        onClick = {
-                            val prefix = packageName + APK_BROWSER_APP_DEFAULT_URL_SEPARATOR
-                            scope.launch {
-                                prefs.apkBrowserAppDefaultUrls.update(
-                                    prefs.apkBrowserAppDefaultUrls.get().filterNot { it.startsWith(prefix) }.toSet()
-                                )
+                if (browserDefaultUrl.isNotBlank()) {
+                    SurfaceCard(cornerRadius = Defaults.CornerLarge, showBorder = true, modifier = Modifier.fillMaxWidth()) {
+                        Column(Modifier.fillMaxWidth().padding(Defaults.SpaceMedium), verticalArrangement = Arrangement.spacedBy(Defaults.SpaceSmall)) {
+                            Text(stringResource(R.string.npmorphe_settings_custom_default_url), style = MaterialTheme.typography.titleSmall)
+                            Text(browserDefaultUrl, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Row(horizontalArrangement = Arrangement.spacedBy(Defaults.SpaceSmall)) {
+                                TextButton(onClick = {
+                                    context.startActivity(InAppBrowserActivity.intent(context, browserDefaultUrl, null, null, null, true))
+                                }) { Text(stringResource(R.string.npmorphe_settings_open_url)) }
+                                TextButton(onClick = { editingDefaultPackage = null; defaultUrlDraft = browserDefaultUrl; showDefaultUrlEditor = true }) { Text(stringResource(R.string.npmorphe_settings_edit_url)) }
+                                TextButton(onClick = { scope.launch { prefs.apkBrowserDefaultUrl.update("") } }) { Text(stringResource(R.string.npmorphe_settings_delete_url)) }
                             }
-                        },
-                        icon = MaterialSymbols.Rounded.Refresh,
-                        title = stringResource(R.string.npmorphe_settings_reset_app_default, packageName),
-                        subtitle = url
-                    )
+                        }
+                    }
+                }
+                appBrowserDefaults.forEach { (packageName, url) ->
+                    SurfaceCard(cornerRadius = Defaults.CornerLarge, showBorder = true, modifier = Modifier.fillMaxWidth()) {
+                        Column(Modifier.fillMaxWidth().padding(Defaults.SpaceMedium), verticalArrangement = Arrangement.spacedBy(Defaults.SpaceSmall)) {
+                            Text(packageName, style = MaterialTheme.typography.titleSmall)
+                            Text(url, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Row(horizontalArrangement = Arrangement.spacedBy(Defaults.SpaceSmall)) {
+                                TextButton(onClick = {
+                                    context.startActivity(InAppBrowserActivity.intent(context, url, packageName, null, null, false))
+                                }) { Text(stringResource(R.string.npmorphe_settings_open_url)) }
+                                TextButton(onClick = { editingDefaultPackage = packageName; defaultUrlDraft = url; showDefaultUrlEditor = true }) { Text(stringResource(R.string.npmorphe_settings_edit_url)) }
+                                TextButton(onClick = {
+                                    val prefix = packageName + APK_BROWSER_APP_DEFAULT_URL_SEPARATOR
+                                    scope.launch { prefs.apkBrowserAppDefaultUrls.update(prefs.apkBrowserAppDefaultUrls.get().filterNot { it.startsWith(prefix) }.toSet()) }
+                                }) { Text(stringResource(R.string.npmorphe_settings_delete_url)) }
+                            }
+                        }
+                    }
                 }
             }
         }
-    }
-
-    DialogHost(visible = showStandaloneBrowser) {
-        ApkDownloadBrowserDialog(
-            initialUrl = APK_BROWSER_DEFAULT_URL,
-            isStandalone = true,
-            onDismiss = { showStandaloneBrowser = false },
-            onApkDownloaded = { _, _, _, _ ->
-                Toast.makeText(context, context.getString(R.string.npmorphe_settings_browser_download_saved), Toast.LENGTH_SHORT).show()
-            }
-        )
     }
 
     LaunchedEffect(showCrashLogs) {
@@ -359,6 +409,37 @@ fun NPmorpheSettings(
         }
     }
 
+    DialogHost(target = pendingBackup) { backup ->
+        AppDialog(
+            onDismissRequest = { pendingBackup = null },
+            title = stringResource(R.string.npmorphe_settings_backup_restore),
+            description = stringResource(R.string.npmorphe_settings_restore_confirm, backup.sourceCount, backup.historyCount),
+            footer = {
+                AppDialogButtonRow(
+                    primaryText = stringResource(R.string.npmorphe_settings_import_backup),
+                    onPrimaryClick = {
+                        scope.launch {
+                            runCatching {
+                                importExportViewModel.applyManagerSettingsJson(backup.managerSettingsJson)
+                                browserDataRepository.importJson(backup.browserDataJson)
+                                historyRepository.replaceAllJson(backup.patchHistoryJson)
+                            }.onSuccess {
+                                pendingBackup = null
+                                Toast.makeText(context, R.string.npmorphe_settings_backup_imported, Toast.LENGTH_SHORT).show()
+                            }.onFailure {
+                                Toast.makeText(context, it.message ?: context.getString(R.string.npmorphe_settings_backup_failed), Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    },
+                    secondaryText = stringResource(android.R.string.cancel),
+                    onSecondaryClick = { pendingBackup = null }
+                )
+            }
+        ) {
+            Text(stringResource(R.string.npmorphe_settings_backup_ready), style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+
     SettingsColumn {
         SettingsSection(
             title = stringResource(R.string.npmorphe_settings_apk_browser),
@@ -372,33 +453,22 @@ fun NPmorpheSettings(
                     subtitle = browserPreferenceLabel
                 )
                 SettingsItem(
-                    onClick = {
-                        defaultUrlDraft = browserDefaultUrl
-                        showDefaultUrlEditor = true
-                    },
-                    icon = MaterialSymbols.Rounded.Edit,
-                    title = stringResource(R.string.npmorphe_settings_custom_default_url),
-                    subtitle = browserDefaultUrl.ifBlank { APK_BROWSER_DEFAULT_URL }
-                )
-                SettingsItem(
                     onClick = { showAppDefaultsReset = true },
-                    icon = MaterialSymbols.Rounded.Refresh,
-                    title = stringResource(R.string.home_apk_browser_reset_default),
-                    subtitle = stringResource(R.string.npmorphe_settings_reset_app_defaults_description),
-                    enabled = browserDefaultUrl.isNotBlank() || appBrowserDefaults.isNotEmpty()
+                    icon = MaterialSymbols.Rounded.Edit,
+                    title = stringResource(R.string.npmorphe_settings_custom_urls),
+                    subtitle = stringResource(R.string.npmorphe_settings_reset_app_defaults_description)
                 )
                 SettingsItem(
-                    onClick = { showStandaloneBrowser = true },
+                    onClick = { context.startActivity(BrowserSettingsActivity.intent(context)) },
                     icon = MaterialSymbols.Rounded.Language,
-                    title = stringResource(R.string.npmorphe_settings_open_browser),
-                    subtitle = stringResource(R.string.npmorphe_settings_open_browser_description)
+                    title = stringResource(R.string.npmorphe_settings_open_browser_settings),
+                    subtitle = stringResource(R.string.npmorphe_browser_settings_title)
                 )
                 SettingsItem(
-                    onClick = { scope.launch { prefs.apkBrowserPreference.update(ApkBrowserPreference.ASK) } },
-                    icon = MaterialSymbols.Rounded.Close,
-                    title = stringResource(R.string.npmorphe_settings_clear_default_browser),
-                    subtitle = stringResource(R.string.home_apk_browser_clear_choice_description),
-                    enabled = browserPreference != ApkBrowserPreference.ASK
+                    onClick = { context.startActivity(DownloadedApksActivity.intent(context)) },
+                    icon = MaterialSymbols.Rounded.Download,
+                    title = stringResource(R.string.npmorphe_downloaded_apks),
+                    subtitle = stringResource(R.string.npmorphe_downloads_title)
                 )
             }
         }
@@ -421,17 +491,30 @@ fun NPmorpheSettings(
                     title = stringResource(R.string.npmorphe_settings_view_history),
                     subtitle = stringResource(R.string.patch_history_description)
                 )
-                SettingsItem(
-                    onClick = { confirmClearHistory = true },
-                    icon = MaterialSymbols.Rounded.Delete,
-                    title = stringResource(R.string.patch_history_clear_all),
-                    subtitle = stringResource(R.string.patch_history_clear_confirm),
-                    enabled = historyEntries.isNotEmpty()
-                )
             }
         }
 
         RollbackBackupSettingsSection(storageViewModel)
+
+        SettingsSection(
+            title = stringResource(R.string.npmorphe_settings_backup_restore),
+            icon = MaterialSymbols.Rounded.Backup
+        ) {
+            SettingsGroup {
+                SettingsItem(
+                    onClick = { exportBackupLauncher.launch(NpmorpheBackupManager.defaultBackupFileName()) },
+                    icon = MaterialSymbols.Rounded.File_upload,
+                    title = stringResource(R.string.npmorphe_settings_export_backup),
+                    subtitle = stringResource(R.string.npmorphe_settings_backup_ready)
+                )
+                SettingsItem(
+                    onClick = { importBackupLauncher.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) },
+                    icon = MaterialSymbols.Rounded.File_download,
+                    title = stringResource(R.string.npmorphe_settings_import_backup),
+                    subtitle = stringResource(R.string.npmorphe_settings_restore_confirm, 0, 0)
+                )
+            }
+        }
 
         SettingsSection(
             title = stringResource(R.string.npmorphe_settings_crash_logs),

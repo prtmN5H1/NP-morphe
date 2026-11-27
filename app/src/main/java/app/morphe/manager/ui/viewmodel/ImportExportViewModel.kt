@@ -63,6 +63,8 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
+import java.util.zip.GZIPInputStream
+import java.io.ByteArrayInputStream
 import java.util.zip.ZipOutputStream
 import kotlin.io.path.deleteExisting
 
@@ -175,6 +177,19 @@ data class SourceArchiveArtifact(
     val signingKey: String? = null,
 )
 
+enum class SourceImportStatus { IMPORTED, DUPLICATE, FAILED }
+data class SourceImportReportItem(
+    val name: String,
+    val url: String,
+    val status: SourceImportStatus,
+    val reason: String? = null
+)
+data class SourceImportReport(val items: List<SourceImportReportItem>) {
+    val imported: Int get() = items.count { it.status == SourceImportStatus.IMPORTED }
+    val duplicates: Int get() = items.count { it.status == SourceImportStatus.DUPLICATE }
+    val failed: Int get() = items.count { it.status == SourceImportStatus.FAILED }
+}
+
 @OptIn(ExperimentalSerializationApi::class)
 class ImportExportViewModel(
     private val app: Application,
@@ -191,6 +206,21 @@ class ImportExportViewModel(
     private val autoBackup: AutoBackup
 ) : ViewModel() {
     private val contentResolver = app.contentResolver
+    var sourceImportReport by mutableStateOf<SourceImportReport?>(null)
+        private set
+
+    fun publishSourceImportReport(items: List<SourceImportReportItem>) {
+        val report = SourceImportReport(items)
+        sourceImportReport = report
+        val toast = if (report.items.isNotEmpty() && report.imported == 0 && report.failed == 0) {
+            app.getString(R.string.npmorphe_import_all_duplicates)
+        } else {
+            app.getString(R.string.npmorphe_import_report_summary, report.imported, report.duplicates, report.failed)
+        }
+        messages.show(toast)
+    }
+
+    fun clearSourceImportReport() { sourceImportReport = null }
 
     private var keystoreImportPath by mutableStateOf<Path?>(null)
     val showCredentialsDialog by derivedStateOf { keystoreImportPath != null }
@@ -314,6 +344,37 @@ class ImportExportViewModel(
         }
     }
 
+    fun importManagerSettingsJson(
+        rawJson: String,
+        mode: PatchBundleRepository.ImportMode = PatchBundleRepository.ImportMode.Replace,
+        sections: Set<SettingsSection> = SettingsSection.entries.toSet()
+    ) = viewModelScope.launch {
+        messages.reportingFailure(R.string.settings_system_import_manager_settings_fail, "Failed to restore NPmorphe settings") {
+            applyManagerSettingsJson(rawJson, mode, sections)
+            messages.show(R.string.settings_system_import_manager_settings_success)
+        }
+    }
+
+    suspend fun applyManagerSettingsJson(
+        rawJson: String,
+        mode: PatchBundleRepository.ImportMode = PatchBundleRepository.ImportMode.Replace,
+        sections: Set<SettingsSection> = SettingsSection.entries.toSet()
+    ) {
+        val exportFile = withContext(Dispatchers.IO) {
+            settingsJson.decodeFromString<ManagerSettingsExportFile>(rawJson)
+        }
+        val settings = exportFile.settings.restrictedTo(sections)
+        preferencesManager.importSettings(settings)
+        settings.appLanguage?.let { AppLocale.select(app, it) }
+        settings.homeAppButtons?.let(homeAppButtonPreferences::importState)
+        if (SettingsSection.SOURCES in sections) {
+            patchBundleRepository.importCustomBundles(settings.customBundles.orEmpty(), mode)
+        }
+        if (SettingsSection.PATCH_SELECTIONS in sections) {
+            exportFile.selections?.let { importSelectionBundles(it.bundles, it.sets, mode) }
+        }
+    }
+
     fun exportManagerSettings(target: Uri) = viewModelScope.launch {
         messages.reportingFailure(
             R.string.settings_system_export_manager_settings_fail,
@@ -375,6 +436,78 @@ class ImportExportViewModel(
     /** Reads a Morphe source archive directly, without asking the user to extract it first. */
     fun importSourcesArchive(source: Uri) = viewModelScope.launch {
         var temporaryArtifacts: List<File> = emptyList()
+        var archiveSources: List<BundleSnapshot> = emptyList()
+        val displayName = source.displayName(contentResolver).orEmpty().lowercase(Locale.US)
+        if (displayName.endsWith(".txt") || displayName.endsWith(".json") ||
+            (displayName.endsWith(".gz") && !displayName.endsWith(".tar.gz"))
+        ) {
+            messages.reportingFailure(R.string.sources_archive_import_failed, "Failed to import sources") {
+                try {
+                val imported = withContext(Dispatchers.IO) {
+                    val bytes = contentResolver.openInputStream(source)?.use { input ->
+                        val output = ByteArrayOutputStream()
+                        val buffer = ByteArray(8192)
+                        var total = 0L
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            total += count
+                            require(total <= MAX_SOURCE_ARCHIVE_TOTAL_ARTIFACT_BYTES) { "Import file is too large" }
+                            output.write(buffer, 0, count)
+                        }
+                        output.toByteArray()
+                    } ?: error("Unable to read import file")
+                    val contents = if (displayName.endsWith(".gz")) GZIPInputStream(ByteArrayInputStream(bytes)).use { it.readBytes() } else bytes
+                    val text = contents.toString(Charsets.UTF_8)
+                    val snapshots = if (displayName.endsWith(".json") || text.trimStart().startsWith("{")) {
+                        json.decodeFromString<SourceArchiveFile>(text).sources
+                    } else {
+                        text.lineSequence().map(String::trim).filter { it.startsWith("https://") || it.startsWith("http://") }
+                            .distinct().mapIndexed { index, url ->
+                                val parsed = Uri.parse(url)
+                                val name = parsed.pathSegments.lastOrNull()?.removeSuffix(".git")?.ifBlank { null }
+                                    ?: parsed.host.orEmpty()
+                                BundleSnapshot(name = name, displayName = name, source = url, sortOrder = index)
+                            }.toList()
+                    }
+                    require(snapshots.isNotEmpty()) { "No source URLs were found in the file" }
+                    require(snapshots.size <= MAX_SOURCE_ARCHIVE_SOURCES) { "Too many sources in import file" }
+                    snapshots
+                }
+                val existing = patchBundleRepository.sources.value.filterIsInstance<app.morphe.manager.domain.bundles.RemotePatchBundle>()
+                    .map { normalizeSourceKey(it.endpoint) }.toSet()
+                patchBundleRepository.importCustomBundles(imported, PatchBundleRepository.ImportMode.Merge)
+                val after = patchBundleRepository.sources.value.filterIsInstance<app.morphe.manager.domain.bundles.RemotePatchBundle>()
+                    .map { normalizeSourceKey(it.endpoint) }.toSet()
+                publishSourceImportReport(imported.map { snapshot ->
+                    val normalized = normalizeSourceKey(snapshot.source)
+                    SourceImportReportItem(
+                        name = snapshot.displayName ?: snapshot.name,
+                        url = snapshot.source,
+                        status = when {
+                            normalized in existing -> SourceImportStatus.DUPLICATE
+                            normalized in after -> SourceImportStatus.IMPORTED
+                            else -> SourceImportStatus.FAILED
+                        },
+                        reason = "Could not add source"
+                    )
+                })
+                } catch (error: Throwable) {
+                    if (error is CancellationException) throw error
+                    publishSourceImportReport(
+                        listOf(
+                            SourceImportReportItem(
+                                source.displayName(contentResolver).orEmpty().ifBlank { "Source import" },
+                                source.toString(),
+                                SourceImportStatus.FAILED,
+                                error.message ?: "Import failed"
+                            )
+                        )
+                    )
+                }
+            }
+            return@launch
+        }
         messages.reportingFailure(
             R.string.sources_archive_import_failed,
             "Failed to import sources"
@@ -383,7 +516,15 @@ class ImportExportViewModel(
                 val parsed = withContext(Dispatchers.IO) {
                     val createdFiles = mutableListOf<File>()
                     try {
-                        val result = contentResolver.openInputStream(source)?.use { input ->
+                        val tarInput = displayName.endsWith(".tar") || displayName.endsWith(".tgz") || displayName.endsWith(".tar.gz")
+                        val tarZip = if (tarInput) {
+                            File.createTempFile("npmorphe-source-", ".zip", app.cacheDir).also { converted ->
+                                createdFiles += converted
+                                convertTarToZip(source, displayName, converted)
+                            }
+                        } else null
+                        val archiveInput = tarZip?.inputStream() ?: contentResolver.openInputStream(source)
+                        val result = archiveInput?.use { input ->
                             ZipInputStream(input).use { zip ->
                                 require(zip.nextEntry?.name == "sources.json") {
                                     "Source archive must begin with sources.json"
@@ -481,12 +622,38 @@ class ImportExportViewModel(
                     }
                 }
                 temporaryArtifacts = parsed.third
+                archiveSources = parsed.first.sources
+                val existing = patchBundleRepository.sources.value.filterIsInstance<app.morphe.manager.domain.bundles.RemotePatchBundle>()
+                    .map { normalizeSourceKey(it.endpoint) }.toSet()
                 patchBundleRepository.importCustomBundles(
                     parsed.first.sources,
                     PatchBundleRepository.ImportMode.Merge,
                     embeddedArtifacts = parsed.second,
                 )
-                messages.show(R.string.sources_archive_import_success)
+                val after = patchBundleRepository.sources.value.filterIsInstance<app.morphe.manager.domain.bundles.RemotePatchBundle>()
+                    .map { normalizeSourceKey(it.endpoint) }.toSet()
+                publishSourceImportReport(archiveSources.map { snapshot ->
+                    val normalized = normalizeSourceKey(snapshot.source)
+                    SourceImportReportItem(
+                        name = snapshot.displayName ?: snapshot.name,
+                        url = snapshot.source,
+                        status = when {
+                            normalized in existing -> SourceImportStatus.DUPLICATE
+                            normalized in after -> SourceImportStatus.IMPORTED
+                            else -> SourceImportStatus.FAILED
+                        },
+                        reason = "Could not add source"
+                    )
+                })
+            } catch (error: Throwable) {
+                if (error is CancellationException) throw error
+                val reason = error.message ?: "Import failed"
+                val failedSources = archiveSources.ifEmpty {
+                    listOf(BundleSnapshot(name = source.displayName(contentResolver).orEmpty().ifBlank { "Source archive" }, source = source.toString()))
+                }
+                publishSourceImportReport(failedSources.map {
+                    SourceImportReportItem(it.displayName ?: it.name, it.source, SourceImportStatus.FAILED, reason)
+                })
             } finally {
                 withContext(Dispatchers.IO) { temporaryArtifacts.forEach { it.delete() } }
             }
@@ -508,6 +675,7 @@ class ImportExportViewModel(
             R.string.sources_archive_import_failed,
             "Failed to import shared sources"
         ) {
+            try {
             val archive = withContext(Dispatchers.IO) {
                 require(payload.length <= MAX_SOURCE_SHARE_PAYLOAD_CHARS) { "Source share link is too large" }
                 val bytes = Base64.decode(payload, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
@@ -516,10 +684,117 @@ class ImportExportViewModel(
             require(archive.version == 1) { "Unsupported source share version" }
             require(archive.sources.isNotEmpty()) { "No sources in share link" }
             require(archive.sources.size <= MAX_SOURCE_ARCHIVE_SOURCES) { "Too many sources in share link" }
+            val existing = patchBundleRepository.sources.value.filterIsInstance<app.morphe.manager.domain.bundles.RemotePatchBundle>()
+                .map { normalizeSourceKey(it.endpoint) }.toSet()
             patchBundleRepository.importCustomBundles(archive.sources, PatchBundleRepository.ImportMode.Merge)
-            messages.show(R.string.sources_archive_import_success)
+            val after = patchBundleRepository.sources.value.filterIsInstance<app.morphe.manager.domain.bundles.RemotePatchBundle>()
+                .map { normalizeSourceKey(it.endpoint) }.toSet()
+            publishSourceImportReport(archive.sources.map { snapshot ->
+                val key = normalizeSourceKey(snapshot.source)
+                SourceImportReportItem(
+                    snapshot.displayName ?: snapshot.name,
+                    snapshot.source,
+                    when {
+                        key in existing -> SourceImportStatus.DUPLICATE
+                        key in after -> SourceImportStatus.IMPORTED
+                        else -> SourceImportStatus.FAILED
+                    },
+                    "Could not add source"
+                )
+            })
+            } catch (error: Throwable) {
+                if (error is CancellationException) throw error
+                publishSourceImportReport(
+                listOf(SourceImportReportItem("Shared source link", "morphe://sources/import", SourceImportStatus.FAILED, error.message ?: "Import failed"))
+                )
+            }
         }
     }
+
+    private fun normalizeSourceKey(url: String): String = runCatching {
+        app.morphe.manager.domain.bundles.SourceUrl.normalizeBundleUrl(url)
+    }.getOrDefault(url).trim().trimEnd('/').lowercase(Locale.US)
+
+    /** Converts a plain TAR or gzip-compressed TAR into a bounded ZIP stream for the normal parser. */
+    private fun convertTarToZip(source: Uri, sourceName: String, outputFile: File) {
+        val raw = contentResolver.openInputStream(source) ?: error("Unable to read source archive")
+        val input = if (sourceName.endsWith(".tgz") || sourceName.endsWith(".tar.gz")) GZIPInputStream(raw) else raw
+        input.use { tar ->
+            ZipOutputStream(outputFile.outputStream().buffered()).use { zip ->
+                val header = ByteArray(TAR_BLOCK_SIZE)
+                var copiedBytes = 0L
+                while (readTarHeader(tar, header)) {
+                    if (header.all { it == 0.toByte() }) break
+                    val name = tarText(header, 0, 100)
+                    val prefix = tarText(header, 345, 155)
+                    val entryName = listOf(prefix, name).filter(String::isNotBlank).joinToString("/")
+                    val size = tarOctal(header, 124, 12)
+                    require(size >= 0L) { "Invalid TAR entry size" }
+                    copiedBytes += size
+                    require(copiedBytes <= MAX_SOURCE_ARCHIVE_TOTAL_ARTIFACT_BYTES) { "TAR archive is too large" }
+                    val type = header[156].toInt().toChar()
+                    if (type == '\u0000' || type == '0') {
+                        require(entryName.isNotBlank() && !entryName.startsWith('/') && '\\' !in entryName) {
+                            "Invalid TAR entry path"
+                        }
+                        require(entryName.split('/').none { it == ".." || it == "." }) { "Invalid TAR entry path" }
+                        require(size <= MAX_SOURCE_ARCHIVE_TOTAL_ARTIFACT_BYTES) { "TAR entry is too large" }
+                        zip.putNextEntry(ZipEntry(entryName))
+                        copyExactly(tar, zip, size)
+                        zip.closeEntry()
+                    } else {
+                        skipExactly(tar, size)
+                    }
+                    val padding = (TAR_BLOCK_SIZE - (size % TAR_BLOCK_SIZE)).rem(TAR_BLOCK_SIZE)
+                    skipExactly(tar, padding)
+                }
+            }
+        }
+    }
+
+    private fun readTarHeader(input: java.io.InputStream, header: ByteArray): Boolean {
+        var offset = 0
+        while (offset < header.size) {
+            val count = input.read(header, offset, header.size - offset)
+            if (count < 0) {
+                require(offset == 0) { "Truncated TAR header" }
+                return false
+            }
+            offset += count
+        }
+        return true
+    }
+
+    private fun tarText(header: ByteArray, offset: Int, length: Int): String =
+        header.copyOfRange(offset, offset + length).toString(Charsets.UTF_8).substringBefore('\u0000').trim()
+
+    private fun tarOctal(header: ByteArray, offset: Int, length: Int): Long {
+        val value = tarText(header, offset, length).trim()
+        if (value.isBlank()) return 0L
+        return value.toLongOrNull(8) ?: error("Invalid TAR entry size")
+    }
+
+    private fun copyExactly(input: java.io.InputStream, output: java.io.OutputStream, size: Long) {
+        var remaining = size
+        val buffer = ByteArray(8192)
+        while (remaining > 0L) {
+            val count = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
+            if (count < 0) error("Truncated TAR file")
+            output.write(buffer, 0, count)
+            remaining -= count
+        }
+    }
+
+    private fun skipExactly(input: java.io.InputStream, size: Long) {
+        var remaining = size
+        val buffer = ByteArray(8192)
+        while (remaining > 0L) {
+            val count = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
+            if (count < 0) error("Truncated TAR file")
+            remaining -= count
+        }
+    }
+
     /** Starts automatic backups into [folder], just picked by the user, see [AutoBackup.enable]. */
     fun enableAutoBackup(folder: Uri) = viewModelScope.launch {
         messages.reportingFailure(R.string.settings_system_auto_backup_folder_failed, "Failed to use the backup folder") {
@@ -872,5 +1147,6 @@ class ImportExportViewModel(
         private const val MAX_SOURCE_ARCHIVE_ARTIFACT_BYTES = 128L * 1024 * 1024
         private const val MAX_SOURCE_ARCHIVE_TOTAL_ARTIFACT_BYTES = 256L * 1024 * 1024
         private const val MAX_SOURCE_SHARE_PAYLOAD_CHARS = 48 * 1024
+        private const val TAR_BLOCK_SIZE = 512
     }
 }

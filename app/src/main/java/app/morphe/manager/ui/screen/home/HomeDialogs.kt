@@ -281,14 +281,12 @@ private fun DialogHostScope.PatchFlowDialog(
                 onHaveApk = storagePickerLauncher,
                 onNeedApk = { apkDownloadHelpers.showInstructions(flow::showDownloadInstructions) },
                 onUseSaved = flow::handleSavedApkSelection,
-                onUseDownloaded = {
-                    cachedBaseApk?.let { downloaded ->
-                        flow.handleBrowserApkDownloaded(
-                            Uri.fromFile(downloaded.file),
-                            downloaded.sourceUrl.orEmpty(),
-                            downloadManagerId = null
-                        )
-                    }
+                onUseDownloaded = { downloaded ->
+                    flow.handleBrowserApkDownloaded(
+                        Uri.fromFile(downloaded.file),
+                        downloaded.sourceUrl.orEmpty(),
+                        downloadManagerId = null
+                    )
                 },
                 onUseInstalled = flow::handleInstalledApkSelection
             )

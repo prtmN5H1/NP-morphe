@@ -59,7 +59,9 @@ fun InstallerFlowDialogs(
             message = stringResource(R.string.installer_rollback_verify_message, appName),
             primaryText = stringResource(R.string.installer_rollback_clear_backup),
             onConfirm = { installViewModel.clearRollbackBackup(packageName) },
-            onDismiss = installViewModel::dismissRollbackCleanupPrompt
+            secondaryText = stringResource(R.string.npmorphe_rollback_keep_backup),
+            onDismiss = installViewModel::dismissRollbackCleanupPrompt,
+            onSecondary = { installViewModel.keepRollbackBackup(packageName) }
         )
     }
 }

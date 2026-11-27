@@ -46,9 +46,13 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.morphe.manager.R
 import app.morphe.manager.domain.apk.InstalledApkInfo
 import app.morphe.manager.domain.apk.SavedApkInfo
+import app.morphe.manager.domain.repository.ApkDownloadManager
+import app.morphe.manager.domain.repository.ApkDownloadStatus
+import org.koin.compose.koinInject
 import app.morphe.manager.domain.bundles.*
 import app.morphe.manager.ui.screen.shared.*
 import app.morphe.manager.util.androidVersionName
@@ -96,11 +100,24 @@ internal fun DialogHostScope.ApkAvailabilityDialog(
     onHaveApk: () -> Unit,
     onNeedApk: () -> Unit,
     onUseSaved: () -> Unit,
-    onUseDownloaded: () -> Unit = {},
+    onUseDownloaded: (DownloadedBaseApk) -> Unit = {},
     onUseInstalled: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val apkDownloadManager = koinInject<ApkDownloadManager>()
+    val downloadRecords by apkDownloadManager.downloads.collectAsStateWithLifecycle()
+    val downloadedVersions = remember(downloadRecords, downloadedBaseApk, packageName) {
+        buildList {
+            downloadedBaseApk?.let(::add)
+            if (!packageName.isNullOrBlank()) {
+                downloadRecords.filter {
+                    it.status == ApkDownloadStatus.COMPLETED && it.packageName == packageName && File(it.filePath).isFile
+                }.forEach { record -> add(DownloadedBaseApk(File(record.filePath), record.versionName, record.sourceUrl)) }
+            }
+        }.distinctBy { it.file.canonicalPath }
+            .sortedByDescending { it.file.lastModified() }
+    }
     var pendingSaveFile by remember { mutableStateOf<File?>(null) }
     val saveApkLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/vnd.android.package-archive")
@@ -217,14 +234,15 @@ internal fun DialogHostScope.ApkAvailabilityDialog(
             verticalArrangement = Arrangement.spacedBy(Defaults.SpaceLarge),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            downloadedBaseApk?.takeIf { it.file.isFile && it.file.length() > 0L }?.let { apk ->
+            downloadedVersions.filter { it.file.isFile && it.file.length() > 0L }.forEach { apk ->
                 DownloadedBaseApkCard(
                     apk = apk,
-                    onUse = onUseDownloaded,
+                    onUse = { onUseDownloaded(apk) },
                     onSave = {
                         pendingSaveFile = apk.file
                         saveApkLauncher.launch(apk.file.name)
-                    }
+                    },
+                    onDelete = { apkDownloadManager.deleteByPath(apk.file.absolutePath) }
                 )
             }
             if (isExpertMode && offeredVersions.isNotEmpty()) {
@@ -353,7 +371,8 @@ internal fun DialogHostScope.ApkAvailabilityDialog(
 private fun DownloadedBaseApkCard(
     apk: DownloadedBaseApk,
     onUse: () -> Unit,
-    onSave: () -> Unit
+    onSave: () -> Unit,
+    onDelete: () -> Unit
 ) {
     Surface(
         shape = RoundedCornerShape(Defaults.CornerLarge),
@@ -390,6 +409,9 @@ private fun DownloadedBaseApkCard(
                 }
                 TextButton(onClick = onSave) {
                     Text(stringResource(R.string.npmorphe_downloaded_apk_save))
+                }
+                TextButton(onClick = onDelete) {
+                    Text(stringResource(R.string.delete), color = MaterialTheme.colorScheme.error)
                 }
             }
         }

@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -22,7 +23,13 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -40,6 +47,7 @@ import app.morphe.manager.ui.screen.shared.AppDialog
 import app.morphe.manager.ui.screen.shared.AppDialogButtonRow
 import app.morphe.manager.ui.screen.shared.Defaults
 import app.morphe.manager.ui.screen.shared.SurfaceCard
+import app.morphe.manager.ui.screen.shared.AppIcon
 import com.composables.icons.materialsymbols.MaterialSymbols
 import com.composables.icons.materialsymbols.rounded.*
 import java.text.SimpleDateFormat
@@ -51,6 +59,7 @@ internal fun DialogHostScope.PatchHistoryDialog(
     entries: List<PatchHistoryEntry>,
     onDismiss: () -> Unit,
     onClear: () -> Unit,
+    onDelete: (String) -> Unit = {},
 ) {
     AppDialog(
         onDismissRequest = onDismiss,
@@ -60,12 +69,12 @@ internal fun DialogHostScope.PatchHistoryDialog(
             AppDialogButtonRow(
                 primaryText = stringResource(R.string.close),
                 onPrimaryClick = onDismiss,
-                secondaryText = stringResource(R.string.patch_history_clear_all).takeIf { entries.isNotEmpty() },
-                onSecondaryClick = onClear.takeIf { entries.isNotEmpty() }
+                secondaryText = null,
+                onSecondaryClick = null
             )
         }
     ) {
-        PatchHistoryContent(entries)
+        PatchHistoryContent(entries, onClear = onClear, onDelete = onDelete)
     }
 }
 
@@ -73,15 +82,35 @@ internal fun DialogHostScope.PatchHistoryDialog(
 internal fun PatchHistoryContent(
     entries: List<PatchHistoryEntry>,
     modifier: Modifier = Modifier,
+    onClear: (() -> Unit)? = null,
+    onDelete: ((String) -> Unit)? = null,
 ) {
-    if (entries.isEmpty()) {
+    var query by remember { mutableStateOf("") }
+    val filteredEntries = remember(entries, query) {
+        entries.filter { query.isBlank() || it.appName.contains(query, true) || it.packageName.contains(query, true) ||
+            it.outputVersionName.orEmpty().contains(query, true) || it.patchSources.any { source -> source.contains(query, true) } }
+    }
+    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Defaults.SpaceSmall)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                modifier = Modifier.weight(1f),
+                label = { Text(stringResource(R.string.npmorphe_history_search)) },
+                singleLine = true
+            )
+            if (onClear != null && entries.isNotEmpty()) {
+                TextButton(onClick = onClear) { Text(stringResource(R.string.patch_history_clear_all)) }
+            }
+        }
+    if (filteredEntries.isEmpty()) {
         Text(
-            text = stringResource(R.string.patch_history_empty),
+            text = stringResource(if (entries.isEmpty()) R.string.patch_history_empty else R.string.search_no_results),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = modifier.padding(vertical = Defaults.SpaceLarge)
         )
-        return
+        return@Column
     }
 
     val timeFormatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
@@ -92,8 +121,9 @@ internal fun PatchHistoryContent(
             .heightIn(max = 560.dp),
         verticalArrangement = Arrangement.spacedBy(Defaults.SpaceSmall)
     ) {
-        val sortedEntries = entries.sortedByDescending { it.patchCompletedAtMillis }
+        val sortedEntries = filteredEntries.sortedByDescending { it.patchCompletedAtMillis }
         itemsIndexed(sortedEntries, key = { index, entry -> "${entry.id}-$index" }) { _, entry ->
+            var expanded by remember(entry.id) { mutableStateOf(false) }
             val patchedAt = runCatching { timeFormatter.format(Date(entry.patchCompletedAtMillis)) }
                 .getOrElse { entry.patchCompletedAtMillis.toString() }
             val lines = mutableListOf(
@@ -150,10 +180,15 @@ internal fun PatchHistoryContent(
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
+                        AppIcon(
+                            modifier = Modifier.size(42.dp),
+                            packageName = entry.packageName,
+                            contentDescription = entry.appName.ifBlank { entry.packageName }
+                        )
                         Text(
                             entry.appName.ifBlank { entry.packageName },
                             style = MaterialTheme.typography.titleMedium,
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier.weight(1f).padding(start = 10.dp)
                         )
                         IconButton(
                             onClick = {
@@ -169,16 +204,33 @@ internal fun PatchHistoryContent(
                         color = MaterialTheme.colorScheme.outlineVariant,
                         modifier = Modifier.padding(vertical = 1.dp)
                     )
-                    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                        lines.forEach { (label, value) ->
-                            HistoryLine(label, value)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(entry.packageName, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                        TextButton(onClick = { expanded = !expanded }) {
+                            Text(stringResource(if (expanded) R.string.npmorphe_history_collapse else R.string.npmorphe_history_expand))
                         }
+                        if (onDelete != null) {
+                            IconButton(onClick = { onDelete(entry.id) }) {
+                                Icon(MaterialSymbols.Rounded.Delete, contentDescription = stringResource(R.string.delete))
+                            }
+                        }
+                    }
+                    Text(
+                        text = listOfNotNull(entry.outputVersionName, entry.outputVersionCode?.toString(), entry.apkSizeBytes?.let(::formatApkSize), patchedAt).joinToString(" · "),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (expanded) Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        lines.forEach { (label, value) -> HistoryLine(label, value) }
                     }
                 }
             }
         }
     }
+    }
 }
+
+private fun formatApkSize(bytes: Long): String = String.format(Locale.getDefault(), "%.1f MB", bytes / (1024.0 * 1024.0))
 
 @Composable
 private fun HistoryLine(label: String, value: String) {

@@ -6,6 +6,10 @@
 package app.morphe.manager.ui.screen.sources
 
 import android.content.Intent
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.net.Uri
+import android.widget.Toast
 import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -61,6 +65,9 @@ import app.morphe.manager.ui.screen.patcher.IncompatiblePatcherVersionDialog
 import app.morphe.manager.ui.screen.shared.*
 import app.morphe.manager.ui.viewmodel.HomeViewModel
 import app.morphe.manager.ui.viewmodel.ImportExportViewModel
+import app.morphe.manager.ui.viewmodel.SourceImportReport
+import app.morphe.manager.ui.viewmodel.SourceImportReportItem
+import app.morphe.manager.ui.viewmodel.SourceImportStatus
 import app.morphe.manager.util.*
 import com.composables.icons.materialsymbols.MaterialSymbols
 import com.composables.icons.materialsymbols.rounded.*
@@ -105,6 +112,7 @@ fun SourcesPage(
     }
     val importExportViewModel: ImportExportViewModel = koinViewModel()
     val pendingArchiveExportUids = remember { mutableStateOf<Set<Int>?>(null) }
+    val sourceImportReport by importExportViewModel.sourceImportReport
     val context = LocalContext.current
     val saveSourceArchive = rememberDocumentSaver(SOURCE_ARCHIVE_MIMETYPE) { uri ->
         // Set by the selection action before the document picker is launched.
@@ -137,9 +145,10 @@ fun SourcesPage(
                 val displayName = uri.displayName(context.contentResolver).orEmpty()
                 val type = context.contentResolver.getType(uri)
                 val isMpp = displayName.endsWith(".mpp", ignoreCase = true)
+                val archiveExtensions = setOf("nps", "np", "dnp", "morphe", "zip", "json", "txt", "gz", "tgz", "tar")
                 val isArchive = !isMpp && (uri.hasSourceArchiveExtension(context.contentResolver) ||
-                        type == SOURCE_ARCHIVE_MIMETYPE || type == "application/zip" ||
-                        type == "application/x-zip-compressed")
+                        displayName.substringAfterLast('.', "").lowercase(Locale.ROOT) in archiveExtensions ||
+                        type in setOf(SOURCE_ARCHIVE_MIMETYPE, "application/zip", "application/x-zip-compressed", "application/gzip", "application/octet-stream"))
                 if (isArchive) archives += uri else bundles += uri
             }
             bundles.takeIf { it.isNotEmpty() }?.let(homeViewModel::pickBundles)
@@ -161,7 +170,7 @@ fun SourcesPage(
         onExportArchive = { uids ->
             if (uids.isNotEmpty()) {
                 pendingArchiveExportUids.value = uids
-                saveSourceArchive("morphe-sources.${SOURCE_ARCHIVE_EXTENSION}")
+                saveSourceArchive("NPmorphe-source.${SOURCE_ARCHIVE_EXTENSION}")
             }
         },
         addSourcePanel = {
@@ -169,9 +178,49 @@ fun SourcesPage(
                 visible = state.isAddingSource,
                 onClose = state::closeAddSource,
                 onSubmit = { urls, options ->
-                    homeViewModel.addSources(urls, options)
                     state.closeAddSource()
                     onSourceAdded()
+                    val selectedLocal = homeViewModel.pickedBundleImports
+                    val before = repository.sources.value.filterIsInstance<RemotePatchBundle>()
+                        .map { runCatching { SourceUrl.normalizeBundleUrl(it.endpoint) }.getOrDefault(it.endpoint).lowercase(Locale.ROOT) }
+                        .toSet()
+                    val addJob = homeViewModel.addSources(urls, options)
+                    addJob.invokeOnCompletion { failure ->
+                        scope.launch {
+                        val after = repository.sources.value.filterIsInstance<RemotePatchBundle>()
+                            .map { runCatching { SourceUrl.normalizeBundleUrl(it.endpoint) }.getOrDefault(it.endpoint).lowercase(Locale.ROOT) }
+                            .toSet()
+                        val items = urls.map { url ->
+                            val key = runCatching { SourceUrl.normalizeBundleUrl(url) }.getOrDefault(url).lowercase(Locale.ROOT)
+                            val status = when {
+                                key in before -> SourceImportStatus.DUPLICATE
+                                key in after -> SourceImportStatus.IMPORTED
+                                else -> SourceImportStatus.FAILED
+                            }
+                            SourceImportReportItem(
+                                Uri.parse(url).lastPathSegment.orEmpty().ifBlank { Uri.parse(url).host.orEmpty() },
+                                url,
+                                status,
+                                failure?.message ?: "Could not add this source"
+                            )
+                        } + selectedLocal.map { picked ->
+                            val status = when (picked.check) {
+                                is PatchBundleRepository.LocalFileCheck.Duplicate -> SourceImportStatus.DUPLICATE
+                                is PatchBundleRepository.LocalFileCheck.New,
+                                is PatchBundleRepository.LocalFileCheck.Update -> if (failure == null) SourceImportStatus.IMPORTED else SourceImportStatus.FAILED
+                                else -> SourceImportStatus.FAILED
+                            }
+                            SourceImportReportItem(
+                                picked.bundleName ?: picked.name,
+                                picked.uri.toString(),
+                                status,
+                                picked.check?.let { if (it is PatchBundleRepository.LocalFileCheck.NotBundle) "File is not a patch bundle" else null }
+                                    ?: failure?.message
+                            )
+                        }
+                        if (items.isNotEmpty()) importExportViewModel.publishSourceImportReport(items)
+                        }
+                    }
                 },
                 onPickFiles = openSourceFilesPicker,
                 onRemoveFile = homeViewModel::unpickBundle,
@@ -205,6 +254,65 @@ fun SourcesPage(
         },
         onReorder = { orderedUids -> scope.launch { repository.reorderBundles(orderedUids) } }
     )
+
+    DialogHost(target = sourceImportReport) { report ->
+        SourceImportReportDialog(report, onDismiss = importExportViewModel::clearSourceImportReport)
+    }
+}
+
+@Composable
+private fun SourceImportReportDialog(report: SourceImportReport, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val summary = stringResource(R.string.npmorphe_import_report_summary, report.imported, report.duplicates, report.failed)
+    val statusLabels = report.items.map { item ->
+        when (item.status) {
+            SourceImportStatus.IMPORTED -> stringResource(R.string.npmorphe_import_status_imported)
+            SourceImportStatus.DUPLICATE -> stringResource(R.string.npmorphe_import_status_duplicate)
+            SourceImportStatus.FAILED -> stringResource(R.string.npmorphe_import_status_failed, item.reason ?: "Import failed")
+        }
+    }
+    val reportText = remember(report, statusLabels) {
+        report.items.mapIndexed { index, item ->
+            "${index + 1}. ${item.name}\n${item.url}\n${statusLabels[index]}"
+        }.joinToString("\n\n").ifBlank { context.getString(R.string.npmorphe_import_report_empty) }
+    }
+    AppDialog(
+        onDismissRequest = onDismiss,
+        title = stringResource(R.string.npmorphe_import_report_title),
+        description = summary,
+        footer = {
+            AppDialogButtonRow(
+                primaryText = stringResource(R.string.npmorphe_import_copy_report),
+                onPrimaryClick = {
+                    val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("NPmorphe import report", "$summary\n\n$reportText"))
+                    Toast.makeText(context, R.string.npmorphe_import_report_copied, Toast.LENGTH_SHORT).show()
+                },
+                secondaryText = stringResource(R.string.close),
+                onSecondaryClick = onDismiss
+            )
+        }
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().heightIn(max = 460.dp).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(Defaults.SpaceSmall)
+        ) {
+            report.items.forEachIndexed { index, item ->
+                val statusLabel = statusLabels[index]
+                SurfaceCard(cornerRadius = Defaults.CornerMedium, showBorder = true, modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.fillMaxWidth().padding(Defaults.SpaceMedium), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("${index + 1}. ${item.name}", style = MaterialTheme.typography.titleSmall)
+                        Text(item.url, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            statusLabel,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (item.status == SourceImportStatus.FAILED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -319,8 +427,8 @@ private fun SourcesPageContent(
         listedSortMode[0] = sourceSortMode
         listState.requestScrollToItem(0)
     }
-    val orderedSources = remember(localOrder, sources, sourceSortMode) {
-        sources.sortedForSourceSort(sourceSortMode, localOrder)
+    val orderedSources = remember(localOrder, sources, sourceSortMode, appCounts, patchCounts) {
+        sources.sortedForSourceSort(sourceSortMode, localOrder, appCounts, patchCounts)
     }
     // Apps and patches are searched alongside source names, so one query answers which source
     // carries them. Apps kept from a source still count, as this is how they are found again.
@@ -343,7 +451,8 @@ private fun SourcesPageContent(
         }
     }
     val filteredSources = remember(
-        orderedSources, sourceFilter, blockedSources, metadataFetchErrors, autoUpdatesDisabled, loadingPausedUids
+        orderedSources, sourceFilter, blockedSources, metadataFetchErrors, autoUpdatesDisabled, loadingPausedUids,
+        appCounts
     ) {
         orderedSources.filter { source ->
             sourceFilter.matches(
@@ -351,7 +460,8 @@ private fun SourcesPageContent(
                 blocked = source.uid in blockedSources,
                 unreachable = source.uid in metadataFetchErrors,
                 updateOff = source.uid.toString() in autoUpdatesDisabled,
-                loadingPaused = source.uid.toString() in loadingPausedUids
+                loadingPaused = source.uid.toString() in loadingPausedUids,
+                hasDeselectedApps = appCounts[source.uid]?.let { it.brought < it.listed } == true
             )
         }
     }
@@ -919,7 +1029,9 @@ private fun SourcesPageContent(
 
 private fun List<PatchBundleSource>.sortedForSourceSort(
     sortMode: SourceBundleSortMode,
-    manualOrder: List<Int>
+    manualOrder: List<Int>,
+    appCounts: Map<Int, SourceAppCount>,
+    patchCounts: Map<Int, Int>
 ): List<PatchBundleSource> = when (sortMode) {
     SourceBundleSortMode.MANUAL -> {
         val byUid = associateBy { it.uid }
@@ -960,6 +1072,27 @@ private fun List<PatchBundleSource>.sortedForSourceSort(
     SourceBundleSortMode.SIZE_LARGEST -> sortedWith(
         compareBy<PatchBundleSource> { if (it.patchesJarFile.exists()) 0 else 1 }
             .thenByDescending { if (it.patchesJarFile.exists()) it.patchesJarFile.length() else 0L }
+            .thenBy { it.sourceSortTitle() }
+            .thenBy { it.uid }
+    )
+
+    SourceBundleSortMode.APPS -> sortedWith(
+        compareByDescending<PatchBundleSource> { appCounts[it.uid]?.listed ?: 0 }
+            .thenBy { it.sourceSortTitle() }
+            .thenBy { it.uid }
+    )
+
+    SourceBundleSortMode.PATCHES -> sortedWith(
+        compareByDescending<PatchBundleSource> { patchCounts[it.uid] ?: 0 }
+            .thenBy { it.sourceSortTitle() }
+            .thenBy { it.uid }
+    )
+
+    SourceBundleSortMode.DISABLED_APPS -> sortedWith(
+        compareByDescending<PatchBundleSource> {
+            val counts = appCounts[it.uid]
+            (counts?.listed ?: 0) - (counts?.brought ?: 0)
+        }
             .thenBy { it.sourceSortTitle() }
             .thenBy { it.uid }
     )

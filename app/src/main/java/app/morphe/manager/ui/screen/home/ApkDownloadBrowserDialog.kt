@@ -64,7 +64,8 @@ internal fun DialogHostScope.ApkDownloadBrowserDialog(
                     packageName = packageName,
                     appName = appName,
                     requestedVersion = requestedVersion,
-                    isStandalone = isStandalone
+                    isStandalone = isStandalone,
+                    returnOnDownload = true
                 )
             )
         }

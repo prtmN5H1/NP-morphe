@@ -76,11 +76,11 @@ fun SettingsPage(
                             bottom = bottomBarHeight + Defaults.SpaceLarge
                         )
                 ) {
+                    NpmorpheSection(navigation.openSubpage)
                     GeneralSection(navigation.openSubpage, onboardingState)
                     PatchingSection(settingsViewModel, navigation, onboardingState)
                     UpdatesSection(settingsViewModel, homeViewModel)
                     FilesSection(settingsViewModel, onboardingState, navigation.openSubpage)
-                    NpmorpheSection(navigation.openSubpage)
                     AboutGroup(navigation.openSubpage)
                     if (settingsSearch.isActive) SubpageMatches(homeViewModel, settingsViewModel, navigation)
                     AnimatedVisibility(

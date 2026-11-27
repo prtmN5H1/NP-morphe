@@ -498,7 +498,7 @@ fun DialogHostScope.InstalledAppInfoDialog(
                 )
             )
         ) {
-            PatchHistoryContent(appHistoryEntries)
+            PatchHistoryContent(appHistoryEntries, onDelete = { id -> scope.launch { patchHistoryRepository.delete(id) } })
         }
     }
 

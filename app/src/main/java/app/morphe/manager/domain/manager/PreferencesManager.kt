@@ -128,6 +128,10 @@ class PreferencesManager(
     /** Ask whether to clear a rollback set after the user opens the newly installed app. */
     val rollbackAutoCleanupEnabled = booleanPreference("rollback_auto_cleanup_enabled", true)
     val rollbackAutoCleanupDisabledApps = stringSetPreference("rollback_auto_cleanup_disabled_apps", emptySet())
+    /** Backup cleanup prompts already raised after a confirmed update. */
+    val rollbackCleanupPendingPackages = stringSetPreference("rollback_cleanup_pending_packages", emptySet())
+    /** Prompts dismissed once; these remain as actionable banners instead of returning as dialogs. */
+    val rollbackCleanupBannerPackages = stringSetPreference("rollback_cleanup_banner_packages", emptySet())
 
     /** Packages whose experimental version warning was confirmed, which is asked once per app. */
     val experimentalVersionsConfirmed = stringSetPreference("experimental_versions_confirmed", emptySet())
@@ -239,6 +243,9 @@ class PreferencesManager(
 
     /** Per-app browser start pages, stored as package-name/unit-separator/URL records. */
     val apkBrowserAppDefaultUrls = stringSetPreference("apk_browser_app_default_urls", emptySet())
+
+    /** Policy applied to private downloaded base APKs after patching or installation. */
+    val downloadAutoDeleteMode = enumPreference("download_auto_delete_mode", DownloadAutoDeleteMode.KEEP_MANUALLY)
 
     /** Whether a batch queue asks the trusted helper for APKs that are missing or behind on its own. */
     val autoDownloadApkHelpersInBatch = booleanPreference("auto_download_apk_helpers_in_batch", false)
@@ -434,6 +441,10 @@ class PreferencesManager(
         val sourceBundleSortMode: String? = null,
         val saveOriginalApks: Boolean? = null,
         val savePatchedApks: Boolean? = null,
+        val apkBrowserPreference: ApkBrowserPreference? = null,
+        val apkBrowserDefaultUrl: String? = null,
+        val apkBrowserAppDefaultUrls: Set<String>? = null,
+        val downloadAutoDeleteMode: DownloadAutoDeleteMode? = null,
         val patcherCompletionSound: Boolean? = null,
         val patcherSuccessSoundUri: String? = null,
         val patcherErrorSoundUri: String? = null,
@@ -507,6 +518,10 @@ class PreferencesManager(
                 sourceBundleSortMode = sourceBundleSortMode.takeIf { sources },
                 saveOriginalApks = saveOriginalApks.takeIf { patching },
                 savePatchedApks = savePatchedApks.takeIf { patching },
+                apkBrowserPreference = apkBrowserPreference.takeIf { patching },
+                apkBrowserDefaultUrl = apkBrowserDefaultUrl.takeIf { patching },
+                apkBrowserAppDefaultUrls = apkBrowserAppDefaultUrls.takeIf { patching },
+                downloadAutoDeleteMode = downloadAutoDeleteMode.takeIf { patching },
                 patcherCompletionSound = patcherCompletionSound.takeIf { patching },
                 patcherSuccessSoundUri = patcherSuccessSoundUri.takeIf { patching },
                 patcherErrorSoundUri = patcherErrorSoundUri.takeIf { patching },
@@ -567,6 +582,10 @@ class PreferencesManager(
         sourceBundleSortMode = sourceBundleSortMode.get(),
         saveOriginalApks = saveOriginalApks.get(),
         savePatchedApks = savePatchedApks.get(),
+        apkBrowserPreference = apkBrowserPreference.get(),
+        apkBrowserDefaultUrl = apkBrowserDefaultUrl.get(),
+        apkBrowserAppDefaultUrls = apkBrowserAppDefaultUrls.get(),
+        downloadAutoDeleteMode = downloadAutoDeleteMode.get(),
         patcherCompletionSound = patcherCompletionSound.get(),
         patcherSuccessSoundUri = patcherSuccessSoundUri.get(),
         patcherErrorSoundUri = patcherErrorSoundUri.get()
@@ -653,6 +672,10 @@ class PreferencesManager(
         snapshot.sourceBundleSortMode?.let { sourceBundleSortMode.value = it }
         snapshot.saveOriginalApks?.let { saveOriginalApks.value = it }
         snapshot.savePatchedApks?.let { savePatchedApks.value = it }
+        snapshot.apkBrowserPreference?.let { apkBrowserPreference.value = it }
+        snapshot.apkBrowserDefaultUrl?.let { apkBrowserDefaultUrl.value = it }
+        snapshot.apkBrowserAppDefaultUrls?.let { apkBrowserAppDefaultUrls.value = it }
+        snapshot.downloadAutoDeleteMode?.let { downloadAutoDeleteMode.value = it }
         snapshot.patcherCompletionSound?.let { patcherCompletionSound.value = it }
         snapshot.patcherSuccessSoundUri?.let { patcherSuccessSoundUri.value = it }
         snapshot.patcherErrorSoundUri?.let { patcherErrorSoundUri.value = it }

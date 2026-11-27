@@ -18,7 +18,10 @@ enum class SourceBundleSortMode(
     NAME_DESC(R.string.list_sort_name_desc),
     ENABLED_FIRST(R.string.sources_sort_enabled_first),
     SIZE_SMALLEST(R.string.sources_sort_size_smallest),
-    SIZE_LARGEST(R.string.sources_sort_size_largest);
+    SIZE_LARGEST(R.string.sources_sort_size_largest),
+    APPS(R.string.npmorphe_sources_sort_apps),
+    PATCHES(R.string.npmorphe_sources_sort_patches),
+    DISABLED_APPS(R.string.npmorphe_sources_sort_disabled_apps);
 
     companion object {
         fun fromPreference(value: String?): SourceBundleSortMode =

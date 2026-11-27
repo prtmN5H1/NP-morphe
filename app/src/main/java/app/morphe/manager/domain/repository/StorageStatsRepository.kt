@@ -27,6 +27,8 @@ data class StorageStats(
     val originalApksBytes: Long,
     val patchedApksBytes: Long,
     val rollbackBackupBytes: Long,
+    val downloadedApksBytes: Long,
+    val downloadedApksCount: Int,
     val patchBundlesBytes: Long,
     val keystoreBytes: Long,
     val appDataBytes: Long,
@@ -40,7 +42,7 @@ data class StorageStats(
         get() = httpCacheBytes + installerShareBytes + patcherWorkspaceBytes + temporaryBytes
 
     val appUsedBytes: Long
-        get() = originalApksBytes + patchedApksBytes + rollbackBackupBytes + patchBundlesBytes +
+        get() = originalApksBytes + patchedApksBytes + rollbackBackupBytes + downloadedApksBytes + patchBundlesBytes +
                 keystoreBytes + appDataBytes + totalCacheBytes
 
     companion object {
@@ -48,6 +50,8 @@ data class StorageStats(
             originalApksBytes = 0L,
             patchedApksBytes = 0L,
             rollbackBackupBytes = 0L,
+            downloadedApksBytes = 0L,
+            downloadedApksCount = 0,
             patchBundlesBytes = 0L,
             keystoreBytes = 0L,
             appDataBytes = 0L,
@@ -136,6 +140,9 @@ class StorageStatsRepository(
             originalApksBytes = filesystem.originalApksDir.totalBytes(),
             patchedApksBytes = filesystem.patchedAppsDir.totalBytes(),
             rollbackBackupBytes = File(app.noBackupFilesDir, "rollback-backups").totalBytes(),
+            downloadedApksBytes = File(app.filesDir, "downloaded_apks").totalBytes(),
+            downloadedApksCount = File(app.filesDir, "downloaded_apks").listFiles().orEmpty()
+                .count { it.isFile && it.name != "downloads.json" && !it.name.endsWith(".part") },
             patchBundlesBytes = filesystem.patchBundlesDir.totalBytes(),
             keystoreBytes = filesystem.keystoreFile.length().coerceAtLeast(0),
             appDataBytes = readAppDataBytes(),

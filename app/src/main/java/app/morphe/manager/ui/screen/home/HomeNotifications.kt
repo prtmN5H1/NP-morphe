@@ -111,7 +111,8 @@ data class HomeNotificationsUi(
     val sourceUpdates: AlertState,
     val repatchAvailable: AlertState,
     val batchQueue: BatchQueueAlertState,
-    val bundleUpdate: BundleUpdateState
+    val bundleUpdate: BundleUpdateState,
+    val rollbackCleanup: AlertState
 )
 
 /**
@@ -478,6 +479,15 @@ private fun homeAlerts(notifications: HomeNotificationsUi): List<HomeAlert> {
     val bundleUpdate = notifications.bundleUpdate
 
     return listOf(
+        alert(
+            key = "rollback_cleanup",
+            state = notifications.rollbackCleanup,
+            tone = SemanticTone.Warning,
+            icon = MaterialSymbols.Rounded.History,
+            title = stringResource(R.string.npmorphe_rollback_banner_title),
+            subtitle = stringResource(R.string.npmorphe_rollback_banner_subtitle),
+            remembered = true
+        ),
         // Leads while it lasts, so the progress of a running update stays in sight until swiped
         // aside behind the bell, and how the update ended brings it back
         HomeAlert(

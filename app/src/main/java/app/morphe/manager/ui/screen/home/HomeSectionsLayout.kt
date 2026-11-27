@@ -109,6 +109,8 @@ class HomeAppActions(
 class HomeChromeActions(
     val onOtherAppsClick: () -> Unit,
     val onOpenHistory: () -> Unit,
+    val onOpenBrowser: () -> Unit,
+    val onOpenDownloads: () -> Unit,
     val onOpenSources: () -> Unit,
     val onRefreshGreeting: (() -> Unit)?,
     val onHideMoreAppsCard: () -> Unit
@@ -165,6 +167,8 @@ internal fun SectionsLayout(
                 onSortClick = { state.isListOptionsOpen = !state.isListOptionsOpen },
                 onPatchFileClick = chromeActions.onOtherAppsClick,
                 onOpenHistory = chromeActions.onOpenHistory,
+                onOpenDownloads = chromeActions.onOpenDownloads,
+                onOpenBrowser = chromeActions.onOpenBrowser,
                 reorder = footerBar.content?.listReorder(),
                 tour = onboardingState
             )

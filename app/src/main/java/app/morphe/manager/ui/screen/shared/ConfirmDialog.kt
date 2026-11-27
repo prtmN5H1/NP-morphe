@@ -50,6 +50,7 @@ fun DialogHostScope.ConfirmDialog(
     primaryText: String,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
+    onSecondary: (() -> Unit)? = null,
     message: CharSequence? = null,
     isPrimaryDestructive: Boolean = true,
     secondaryText: String = stringResource(android.R.string.cancel),
@@ -71,7 +72,7 @@ fun DialogHostScope.ConfirmDialog(
                 onPrimaryClick = onConfirm,
                 isPrimaryDestructive = isPrimaryDestructive,
                 secondaryText = secondaryText,
-                onSecondaryClick = onDismiss
+                onSecondaryClick = onSecondary ?: onDismiss
             )
         }
     ) {

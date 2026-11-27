@@ -26,6 +26,7 @@ import app.morphe.manager.domain.batch.BatchTarget
 import app.morphe.manager.domain.manager.*
 import app.morphe.manager.domain.repository.PatchBundleRepository
 import app.morphe.manager.domain.repository.PatchHistoryRepository
+import app.morphe.manager.domain.repository.RollbackBackupRepository
 import app.morphe.manager.ui.model.HomeAppItem
 import app.morphe.manager.ui.model.navigation.Patcher
 import app.morphe.manager.ui.screen.home.*
@@ -78,7 +79,16 @@ fun HomeScreen(
     val context = LocalContext.current
     val messages = koinInject<UserMessages>()
     val patchHistoryRepository = koinInject<PatchHistoryRepository>()
+    val rollbackBackupRepository = koinInject<RollbackBackupRepository>()
     val patchHistoryEntries by patchHistoryRepository.entries.collectAsStateWithLifecycle()
+    val pendingRollbackPrompts by rollbackBackupRepository.cleanupPendingPackages.collectAsStateWithLifecycle()
+    val rollbackBannerPackages by rollbackBackupRepository.cleanupBannerPackages.collectAsStateWithLifecycle()
+    val rollbackBannerPackage = rollbackBannerPackages.firstOrNull { it in pendingRollbackPrompts }
+    LaunchedEffect(rollbackBackupRepository) { rollbackBackupRepository.refresh() }
+    LaunchedEffect(pendingRollbackPrompts, rollbackBannerPackages) {
+        pendingRollbackPrompts.firstOrNull { it !in rollbackBannerPackages }
+            ?.let(installViewModel::showRollbackCleanupPrompt)
+    }
     val scope = rememberCoroutineScope()
     var showPatchHistory by rememberSaveable { mutableStateOf(false) }
     val sourcesLoadingText = stringResource(R.string.home_sources_are_loading)
@@ -96,7 +106,8 @@ fun HomeScreen(
         PatchHistoryDialog(
             entries = patchHistoryEntries,
             onDismiss = { showPatchHistory = false },
-            onClear = { scope.launch { patchHistoryRepository.clear() } }
+            onClear = { scope.launch { patchHistoryRepository.clear() } },
+            onDelete = { id -> scope.launch { patchHistoryRepository.delete(id) } }
         )
     }
     // Turns to each step's page, and back to the apps once the tour ends
@@ -339,7 +350,10 @@ fun HomeScreen(
             visible = homeViewModel.showBundleUpdateSnackbar,
             status = homeViewModel.snackbarStatus,
             progress = bundleUpdateProgress
-        )
+        ),
+        rollbackCleanup = AlertState.about(listOfNotNull(rollbackBannerPackage)) {
+            rollbackBannerPackage?.let(installViewModel::showRollbackCleanupPrompt)
+        }
     )
     val alerts = rememberHomeAlerts(notifications, prefs.snoozedAlerts)
     // Each page's header, which the alerts hang under on whichever page is on screen
@@ -497,6 +511,8 @@ fun HomeScreen(
                             }
                         },
                         onOpenHistory = { showPatchHistory = true },
+                        onOpenDownloads = { context.startActivity(DownloadedApksActivity.intent(context)) },
+                        onOpenBrowser = { context.startActivity(InAppBrowserActivity.intent(context, APK_BROWSER_DEFAULT_URL, null, null, null, true)) },
                         onOpenSources = { openPage(MainPage.SOURCES) },
                         onRefreshGreeting = onRefresh,
                         onHideMoreAppsCard = { scope.launch { prefs.showMoreAppsCard.update(false) } }

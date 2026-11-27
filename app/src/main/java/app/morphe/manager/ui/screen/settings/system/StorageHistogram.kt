@@ -255,6 +255,7 @@ object StorageColors {
     val OriginalApks = Color(0xFF4285F4)
     val PatchedApks = Color(0xFFAB47BC)
     val RollbackBackups = Color(0xFF8E7CC3)
+    val DownloadedApks = Color(0xFF00ACC1)
     val PatchBundles = Color(0xFF66BB6A)
     val Keystore = Color(0xFFFFB300)
     val AppData = Color(0xFF5C6BC0)

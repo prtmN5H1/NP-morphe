@@ -20,6 +20,9 @@ enum class SourceFilterMode(
     DISABLED(R.string.disabled),
     UPDATE_OFF(R.string.npmorphe_source_filter_update_off),
     LOADING_PAUSED(R.string.npmorphe_source_filter_loading_pause),
+    SELECTED_APP(R.string.npmorphe_source_filter_selected_app),
+    LOADING_DISABLED(R.string.npmorphe_source_filter_loading_disabled),
+    LOADING_ENABLED(R.string.npmorphe_source_filter_loading_enabled),
     ISSUES(R.string.sources_filter_issues);
 
     val isActive: Boolean get() = this != ALL
@@ -33,7 +36,8 @@ enum class SourceFilterMode(
         blocked: Boolean,
         unreachable: Boolean,
         updateOff: Boolean,
-        loadingPaused: Boolean
+        loadingPaused: Boolean,
+        hasDeselectedApps: Boolean
     ): Boolean =
         when (this) {
             ALL -> true
@@ -41,6 +45,9 @@ enum class SourceFilterMode(
             DISABLED -> !source.enabled
             UPDATE_OFF -> updateOff
             LOADING_PAUSED -> loadingPaused
+            SELECTED_APP -> hasDeselectedApps
+            LOADING_DISABLED -> loadingPaused
+            LOADING_ENABLED -> !loadingPaused
             ISSUES -> blocked || unreachable || source.isHeldBack || source.requiresManagerUpdate ||
                     source.state is PatchBundleSource.State.Failed ||
                     (source.state is PatchBundleSource.State.Missing && !loadingPaused)

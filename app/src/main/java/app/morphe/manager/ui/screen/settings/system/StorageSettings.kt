@@ -23,6 +23,10 @@ import app.morphe.manager.R
 import app.morphe.manager.domain.repository.StorageStats
 import app.morphe.manager.domain.repository.RollbackBackup
 import app.morphe.manager.domain.repository.RollbackBackupRepository
+import app.morphe.manager.domain.repository.ApkDownloadManager
+import app.morphe.manager.domain.repository.ApkDownloadStatus
+import app.morphe.manager.ui.screen.home.DownloadedApksActivity
+import app.morphe.manager.ui.screen.shared.AppIcon
 import app.morphe.manager.ui.screen.settings.SettingsSubpage
 import app.morphe.manager.ui.screen.shared.*
 import app.morphe.manager.ui.viewmodel.InstallViewModel
@@ -74,7 +78,10 @@ private fun StorageOverview(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val messages = koinInject<UserMessages>()
+    val downloadManager = koinInject<ApkDownloadManager>()
+    val downloads by downloadManager.downloads.collectAsStateWithLifecycle()
     var showClearAllConfirm by remember { mutableStateOf(false) }
+    var showClearDownloadedConfirm by remember { mutableStateOf(false) }
     val patchInProgress by viewModel.patchInProgress.collectAsStateWithLifecycle()
     // A clear that would pull a running patch's files from under it, held until the user confirms
     var guardedClear by remember { mutableStateOf<Pair<String, () -> Unit>?>(null) }
@@ -138,6 +145,20 @@ private fun StorageOverview(
         )
     }
 
+    DialogHost(visible = showClearDownloadedConfirm) {
+        ConfirmDialog(
+            title = stringResource(R.string.npmorphe_downloads_clear_all),
+            message = stringResource(R.string.npmorphe_downloads_clear_confirm),
+            primaryText = stringResource(R.string.delete),
+            onConfirm = {
+                downloadManager.clearCompleted()
+                showClearDownloadedConfirm = false
+                viewModel.refresh()
+            },
+            onDismiss = { showClearDownloadedConfirm = false }
+        )
+    }
+
     // Nothing has been read until the first reading lands, and a real one always has room free
     val loading = stats == StorageStats.Empty
 
@@ -168,6 +189,38 @@ private fun StorageOverview(
         }
 
         SavedApksSection(viewModel = viewModel, stats = stats, onOpen = onOpenApks)
+        SettingsSection(
+            title = stringResource(R.string.npmorphe_downloaded_apks),
+            icon = MaterialSymbols.Rounded.Download
+        ) {
+            SettingsGroup {
+                SettingsItem(
+                    onClick = { context.startActivity(DownloadedApksActivity.intent(context)) },
+                    icon = MaterialSymbols.Rounded.Inventory_2,
+                    title = stringResource(R.string.npmorphe_downloads_title),
+                    subtitle = stringResource(
+                        R.string.npmorphe_downloads_storage_summary,
+                        stats.downloadedApksCount,
+                        context.formatBytes(stats.downloadedApksBytes)
+                    ),
+                    trailingContent = {
+                        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                            IconButton(
+                                onClick = { showClearDownloadedConfirm = true },
+                                enabled = downloads.any { it.status == ApkDownloadStatus.COMPLETED }
+                            ) {
+                                Icon(
+                                    imageVector = MaterialSymbols.Rounded.Delete_sweep,
+                                    contentDescription = stringResource(R.string.npmorphe_downloads_clear_all),
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                            }
+                            ForwardChevronIcon()
+                        }
+                    }
+                )
+            }
+        }
         RollbackBackupSettingsSection(viewModel)
 
         SettingsSection(
@@ -292,6 +345,8 @@ internal fun RollbackBackupSettingsSection(viewModel: StorageManagementViewModel
     var showBackups by rememberSaveable { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<RollbackBackup?>(null) }
     var confirmClearAll by remember { mutableStateOf(false) }
+    var confirmDeleteSelected by remember { mutableStateOf(false) }
+    var selectedBackupPackages by remember { mutableStateOf<Set<String>>(emptySet()) }
 
     LaunchedEffect(repository) { repository.refresh() }
 
@@ -321,6 +376,11 @@ internal fun RollbackBackupSettingsSection(viewModel: StorageManagementViewModel
                     modifier = Modifier.fillMaxWidth().padding(horizontal = Defaults.SpaceLarge),
                     verticalArrangement = Arrangement.spacedBy(Defaults.SpaceSmall)
                 ) {
+                    if (selectedBackupPackages.isNotEmpty()) {
+                        TextButton(onClick = { confirmDeleteSelected = true }, modifier = Modifier.fillMaxWidth()) {
+                            Text(stringResource(R.string.npmorphe_rollback_delete_selected, selectedBackupPackages.size))
+                        }
+                    }
                     if (backups.isNotEmpty()) {
                         TextButton(
                             onClick = { confirmClearAll = true },
@@ -349,18 +409,42 @@ internal fun RollbackBackupSettingsSection(viewModel: StorageManagementViewModel
                     )
                 } else {
                     backups.forEach { backup ->
+                        val context = LocalContext.current
+                        val appName = remember(backup.packageName) {
+                            runCatching {
+                                context.packageManager.getApplicationInfo(backup.packageName, 0)
+                                    .loadLabel(context.packageManager).toString()
+                            }.getOrDefault(backup.packageName)
+                        }
+                        val backupDate = remember(backup.backedUpAt) {
+                            java.text.DateFormat.getDateTimeInstance().format(java.util.Date(backup.backedUpAt))
+                        }
                         SettingsItem(
                             onClick = {
-                                installViewModel.rollback(backup.packageName)
-                                showBackups = false
+                                if (selectedBackupPackages.isNotEmpty()) {
+                                    selectedBackupPackages = if (backup.packageName in selectedBackupPackages) selectedBackupPackages - backup.packageName else selectedBackupPackages + backup.packageName
+                                } else {
+                                    installViewModel.rollback(backup.packageName)
+                                    showBackups = false
+                                }
                             },
-                            icon = MaterialSymbols.Rounded.History,
-                            title = backup.packageName,
+                            leadingContent = {
+                                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    AppIcon(Modifier.size(42.dp), packageName = backup.packageName, contentDescription = appName)
+                                    Checkbox(
+                                        checked = backup.packageName in selectedBackupPackages,
+                                        onCheckedChange = { selected ->
+                                            selectedBackupPackages = if (selected) selectedBackupPackages + backup.packageName else selectedBackupPackages - backup.packageName
+                                        }
+                                    )
+                                }
+                            },
+                            title = appName,
                             subtitle = stringResource(
                                 R.string.settings_system_rollback_version_detail,
                                 backup.versionName?.withVersionPrefix() ?: stringResource(R.string.version),
                                 backup.versionCode
-                            ),
+                            ) + " · " + context.formatBytes(backup.sizeBytes) + " · " + backupDate,
                             trailingContent = {
                                 IconButton(onClick = { pendingDelete = backup }) {
                                     Icon(
@@ -375,6 +459,22 @@ internal fun RollbackBackupSettingsSection(viewModel: StorageManagementViewModel
                 }
             }
         }
+    }
+
+    DialogHost(visible = confirmDeleteSelected) {
+        ConfirmDialog(
+            title = stringResource(R.string.npmorphe_rollback_delete_selected, selectedBackupPackages.size),
+            message = stringResource(R.string.settings_system_rollback_clear_all_message),
+            primaryText = stringResource(R.string.delete),
+            isPrimaryDestructive = true,
+            onConfirm = {
+                val targets = selectedBackupPackages.toList()
+                selectedBackupPackages = emptySet()
+                confirmDeleteSelected = false
+                scope.launch { targets.forEach { repository.delete(it) } }
+            },
+            onDismiss = { confirmDeleteSelected = false }
+        )
     }
 
     DialogHost(target = pendingDelete) { backup ->
@@ -514,6 +614,7 @@ private fun StorageStats.toSegments(): List<StorageSegment> {
     val originalLabel = stringResource(R.string.settings_system_original_apks_title)
     val patchedLabel = stringResource(R.string.settings_system_patched_apks_title)
     val rollbackLabel = stringResource(R.string.settings_system_rollback_title)
+    val downloadedLabel = stringResource(R.string.npmorphe_downloaded_apks)
     val bundlesLabel = stringResource(R.string.settings_system_storage_patch_bundles_title)
     val keystoreLabel = stringResource(R.string.settings_system_storage_keystore_title)
     val appDataLabel = stringResource(R.string.settings_system_storage_app_data_title)
@@ -525,6 +626,7 @@ private fun StorageStats.toSegments(): List<StorageSegment> {
         StorageSegment("original", originalLabel, originalApksBytes, StorageColors.OriginalApks),
         StorageSegment("patched", patchedLabel, patchedApksBytes, StorageColors.PatchedApks),
         StorageSegment("rollback", rollbackLabel, rollbackBackupBytes, StorageColors.RollbackBackups),
+        StorageSegment("downloaded", downloadedLabel, downloadedApksBytes, StorageColors.DownloadedApks),
         StorageSegment("bundles", bundlesLabel, patchBundlesBytes, StorageColors.PatchBundles),
         StorageSegment("keystore", keystoreLabel, keystoreBytes, StorageColors.Keystore),
         StorageSegment("appdata", appDataLabel, appDataBytes, StorageColors.AppData),

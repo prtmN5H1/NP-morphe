@@ -12,7 +12,6 @@ import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
-import android.os.SystemClock
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -23,6 +22,7 @@ import android.webkit.URLUtil
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -42,22 +42,19 @@ import androidx.lifecycle.lifecycleScope
 import app.morphe.manager.R
 import app.morphe.manager.domain.manager.APK_BROWSER_APP_DEFAULT_URL_SEPARATOR
 import app.morphe.manager.domain.manager.PreferencesManager
+import app.morphe.manager.domain.repository.ApkDownloadManager
+import app.morphe.manager.domain.repository.ApkDownloadStatus
+import app.morphe.manager.domain.repository.BrowserDataRepository
+import app.morphe.manager.domain.repository.UserScriptRunAt
+import app.morphe.manager.service.ApkDownloadService
 import app.morphe.manager.util.APK_BROWSER_DEFAULT_URL
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.koin.android.ext.android.inject
 import java.io.File
-import java.io.FileInputStream
-import java.io.FileOutputStream
+import java.io.ByteArrayInputStream
 import java.io.IOException
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.Locale
 
 data class DownloadedBaseApk(
@@ -69,12 +66,20 @@ data class DownloadedBaseApk(
 /** Full-window browser Activity; its WebView is never attached to a Compose dialog window. */
 class InAppBrowserActivity : ComponentActivity() {
     private val preferences: PreferencesManager by inject()
+    private val downloadManager: ApkDownloadManager by inject()
+    private val browserData: BrowserDataRepository by inject()
     private var browserWebView: WebView? = null
+    private var browserWebViewClient: WebViewClient? = null
+    private var browserWebChromeClient: WebChromeClient? = null
     private var addressContainer: FrameLayout? = null
+    private var browserTabHost: FrameLayout? = null
+    private val browserTabs = mutableListOf<WebView>()
+    private var desktopMode = false
     private var addressLabel: TextView? = null
     private var addressEditor: EditText? = null
     private var progressBar: ProgressBar? = null
     private var bottomDownloadStatus: TextView? = null
+    private var toolbarDownloadStatus: TextView? = null
     private var reloadButton: TextView? = null
     private var downloadCard: LinearLayout? = null
     private var downloadNameView: TextView? = null
@@ -87,10 +92,10 @@ class InAppBrowserActivity : ComponentActivity() {
     private var targetPackageName: String? = null
     private var appName: String? = null
     private var requestedVersion: String? = null
-    private var activeDownloadJob: Job? = null
-    @Volatile private var activeConnection: HttpURLConnection? = null
-    @Volatile private var activePartFile: File? = null
-    private var closingAfterCancel = false
+    private var activeDownloadId: String? = null
+    private val activeDownloadIds = linkedSetOf<String>()
+    private var returnOnDownload = false
+    private var downloadObserverJob: Job? = null
     private lateinit var mobileUserAgent: String
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -102,12 +107,11 @@ class InAppBrowserActivity : ComponentActivity() {
         targetPackageName = intent.getStringExtra(EXTRA_PACKAGE_NAME)
         appName = intent.getStringExtra(EXTRA_APP_NAME)
         requestedVersion = intent.getStringExtra(EXTRA_REQUESTED_VERSION)
+        returnOnDownload = intent.getBooleanExtra(EXTRA_RETURN_ON_DOWNLOAD, false)
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (activeDownloadJob?.isActive == true) {
-                    confirmCancelDownload(closeWhenCancelled = false)
-                } else if (browserWebView?.canGoBack() == true) {
+                if (browserWebView?.canGoBack() == true) {
                     browserWebView?.goBack()
                 } else {
                     finish()
@@ -132,6 +136,43 @@ class InAppBrowserActivity : ComponentActivity() {
             currentUrl = startUrl
             setContentView(createBrowserLayout())
             browserWebView?.loadUrl(startUrl)
+            downloadObserverJob = lifecycleScope.launch {
+                downloadManager.downloads.collect { records ->
+                    val record = records.firstOrNull { it.id in activeDownloadIds } ?: return@collect
+                    activeDownloadId = record.id
+                    when (record.status) {
+                        ApkDownloadStatus.QUEUED, ApkDownloadStatus.DOWNLOADING -> showDownloadCard(record.fileName, record.downloadedBytes, record.totalBytes, record.bytesPerSecond.toDouble())
+                        ApkDownloadStatus.PAUSED -> downloadDetailsView?.text = getString(R.string.npmorphe_downloads_paused)
+                        ApkDownloadStatus.FAILED -> {
+                            activeDownloadIds.remove(record.id)
+                            activeDownloadId = null
+                            downloadDetailsView?.text = record.error ?: getString(R.string.npmorphe_browser_download_failed)
+                            Toast.makeText(this@InAppBrowserActivity, record.error ?: getString(R.string.npmorphe_browser_download_failed), Toast.LENGTH_LONG).show()
+                            updateNavigationButtons()
+                        }
+                        ApkDownloadStatus.COMPLETED -> {
+                            activeDownloadIds.remove(record.id)
+                            activeDownloadId = activeDownloadIds.lastOrNull()
+                            val file = File(record.filePath)
+                            rememberDownloadedFile(file, record.sourceUrl)
+                            if (returnOnDownload && !isFinishing && !isDestroyed) {
+                                setResult(RESULT_OK, Intent().apply {
+                                    putExtra(EXTRA_RESULT_URI, Uri.fromFile(file).toString())
+                                    putExtra(EXTRA_RESULT_FILE_PATH, file.absolutePath)
+                                    putExtra(EXTRA_RESULT_URL, record.sourceUrl)
+                                    putExtra(EXTRA_RESULT_DOWNLOAD_ID, NO_DOWNLOAD_MANAGER_ID)
+                                    putExtra(EXTRA_RESULT_PERMANENT, false)
+                                })
+                                finish()
+                            } else {
+                                downloadCard?.visibility = View.GONE
+                                Toast.makeText(this@InAppBrowserActivity, R.string.npmorphe_downloaded_apk_saved, Toast.LENGTH_SHORT).show()
+                                updateNavigationButtons()
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -170,6 +211,20 @@ class InAppBrowserActivity : ComponentActivity() {
         toolbar.addView(addressBox, LinearLayout.LayoutParams(0, dp(46), 1f).apply {
             setMargins(dp(4), 0, dp(4), 0)
         })
+        toolbarDownloadStatus = TextView(this).apply {
+            textSize = 11f
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            setPadding(dp(7), 0, dp(7), 0)
+            background = roundedBackground(DARK_PILL, dp(16))
+            visibility = View.GONE
+            contentDescription = getString(R.string.npmorphe_downloads_title)
+            setOnClickListener { startActivity(DownloadedApksActivity.intent(this@InAppBrowserActivity)) }
+        }
+        toolbar.addView(toolbarDownloadStatus, LinearLayout.LayoutParams(-2, dp(30)).apply {
+            setMargins(dp(2), 0, dp(2), 0)
+        })
+        toolbar.addView(iconButton("▢", getString(R.string.npmorphe_browser_tabs), dp(42), ::showTabsMenu))
         toolbar.addView(iconButton("⋮", getString(R.string.npmorphe_browser_more_options), dp(44), ::showBrowserMenu))
         root.addView(toolbar, LinearLayout.LayoutParams(-1, dp(56)))
 
@@ -191,7 +246,7 @@ class InAppBrowserActivity : ComponentActivity() {
             settings.javaScriptCanOpenWindowsAutomatically = true
             settings.loadsImagesAutomatically = true
             settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-            settings.setSupportMultipleWindows(false)
+            settings.setSupportMultipleWindows(true)
             settings.allowFileAccess = false
             settings.allowContentAccess = false
             settings.userAgentString = settings.userAgentString
@@ -200,23 +255,34 @@ class InAppBrowserActivity : ComponentActivity() {
             mobileUserAgent = settings.userAgentString
             CookieManager.getInstance().setAcceptCookie(true)
             CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
-            webViewClient = object : WebViewClient() {
+            val sharedWebViewClient = object : WebViewClient() {
                 override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
                     super.onPageStarted(view, url, favicon)
-                    if (currentUrl != url && isHttpAddress(currentUrl)) previousSafeUrl = currentUrl
-                    currentUrl = url
-                    addressLabel?.text = cleanAddress(url)
-                    pageLoading = true
-                    updateNavigationButtons()
+                    if (view === browserWebView) {
+                        if (currentUrl != url && isHttpAddress(currentUrl)) previousSafeUrl = currentUrl
+                        currentUrl = url
+                        addressLabel?.text = cleanAddress(url)
+                        pageLoading = true
+                        updateNavigationButtons()
+                    }
+                    browserData.scriptsFor(url, UserScriptRunAt.DOCUMENT_START).forEach { script ->
+                        view.evaluateJavascript(script.source, null)
+                    }
                 }
 
                 override fun onPageFinished(view: WebView, url: String) {
                     super.onPageFinished(view, url)
-                    currentUrl = url
-                    if (addressEditor == null) addressLabel?.text = cleanAddress(url)
-                    pageLoading = false
-                    progressBar?.visibility = View.GONE
-                    updateNavigationButtons()
+                    browserData.recordVisit(url, view.title.orEmpty())
+                    browserData.scriptsFor(url, UserScriptRunAt.DOCUMENT_END).forEach { script ->
+                        view.evaluateJavascript(script.source, null)
+                    }
+                    if (view === browserWebView) {
+                        currentUrl = url
+                        if (addressEditor == null) addressLabel?.text = cleanAddress(url)
+                        pageLoading = false
+                        progressBar?.visibility = View.GONE
+                        updateNavigationButtons()
+                    }
                 }
 
                 override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
@@ -225,6 +291,13 @@ class InAppBrowserActivity : ComponentActivity() {
                 @Suppress("DEPRECATION")
                 override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean =
                     handleUrlScheme(Uri.parse(url))
+
+                override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+                    if (browserData.shouldBlockRequest(request.url.toString())) {
+                        return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
+                    }
+                    return super.shouldInterceptRequest(view, request)
+                }
 
                 override fun onReceivedError(
                     view: WebView,
@@ -246,24 +319,61 @@ class InAppBrowserActivity : ComponentActivity() {
                     }
                 }
             }
-            webChromeClient = object : WebChromeClient() {
+            val sharedWebChromeClient = object : WebChromeClient() {
                 override fun onProgressChanged(view: WebView, newProgress: Int) {
-                    pageLoading = newProgress < 100
-                    progressBar?.progress = newProgress
-                    progressBar?.visibility = if (newProgress < 100) View.VISIBLE else View.GONE
-                    updateNavigationButtons()
+                    if (view === browserWebView) {
+                        pageLoading = newProgress < 100
+                        progressBar?.progress = newProgress
+                        progressBar?.visibility = if (newProgress < 100) View.VISIBLE else View.GONE
+                        updateNavigationButtons()
+                    }
                 }
 
                 override fun onReceivedTitle(view: WebView, title: String?) {
-                    if (addressEditor == null) addressLabel?.text = cleanAddress(view.url.orEmpty(), title)
+                    if (view === browserWebView && addressEditor == null) addressLabel?.text = cleanAddress(view.url.orEmpty(), title)
+                }
+
+                override fun onCreateWindow(view: WebView, isDialog: Boolean, isUserGesture: Boolean, resultMsg: android.os.Message): Boolean {
+                    val host = browserTabHost ?: return false
+                    val popup = WebView(this@InAppBrowserActivity)
+                    popup.settings.javaScriptEnabled = true
+                    popup.settings.domStorageEnabled = true
+                    popup.settings.databaseEnabled = true
+                    popup.settings.javaScriptCanOpenWindowsAutomatically = true
+                    popup.settings.loadsImagesAutomatically = true
+                    popup.settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                    popup.settings.userAgentString = mobileUserAgent
+                    popup.settings.setSupportMultipleWindows(true)
+                    CookieManager.getInstance().setAcceptThirdPartyCookies(popup, true)
+                    popup.webViewClient = browserWebViewClient ?: WebViewClient()
+                    popup.webChromeClient = browserWebChromeClient ?: WebChromeClient()
+                    popup.setDownloadListener { url, agent, disposition, mime, _ ->
+                        beginDirectDownload(url, agent, disposition, mime, popup.url.orEmpty())
+                    }
+                    host.addView(popup, FrameLayout.LayoutParams(-1, -1))
+                    browserTabs += popup
+                    switchToTab(browserTabs.lastIndex)
+                    val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
+                    transport.webView = popup
+                    resultMsg.sendToTarget()
+                    true
                 }
             }
+            browserWebViewClient = sharedWebViewClient
+            browserWebChromeClient = sharedWebChromeClient
+            webViewClient = sharedWebViewClient
+            webChromeClient = sharedWebChromeClient
             setDownloadListener(DownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
                 beginDirectDownload(url, userAgent, contentDisposition, mimeType, this.url.orEmpty())
             })
         }
         browserWebView = webView
-        root.addView(webView, LinearLayout.LayoutParams(-1, 0, 1f))
+        browserTabHost = FrameLayout(this).also { host ->
+            browserTabs.clear()
+            browserTabs += webView
+            host.addView(webView, FrameLayout.LayoutParams(-1, -1))
+        }
+        root.addView(browserTabHost, LinearLayout.LayoutParams(-1, 0, 1f))
 
         val card = createDownloadCard()
         downloadCard = card
@@ -277,8 +387,7 @@ class InAppBrowserActivity : ComponentActivity() {
             setBackgroundColor(DARK_TOOLBAR)
         }
         navigation.addView(iconButton("←", getString(R.string.back), dp(52)) {
-            if (activeDownloadJob?.isActive == true) confirmCancelDownload(false)
-            else if (browserWebView?.canGoBack() == true) browserWebView?.goBack()
+            if (browserWebView?.canGoBack() == true) browserWebView?.goBack()
         })
         navigation.addView(iconButton("→", getString(R.string.npmorphe_apk_browser_forward), dp(52)) {
             browserWebView?.goForward()
@@ -374,16 +483,94 @@ class InAppBrowserActivity : ComponentActivity() {
             menu.add(0, MENU_RELOAD, 1, getString(R.string.refresh))
             menu.add(0, MENU_COPY, 2, getString(R.string.npmorphe_browser_copy_link))
             menu.add(0, MENU_EXTERNAL, 3, getString(R.string.npmorphe_browser_open_external))
+            menu.add(0, MENU_BOOKMARK, 4, getString(R.string.npmorphe_browser_add_bookmark))
+            menu.add(0, MENU_DESKTOP, 5, getString(R.string.npmorphe_browser_desktop_site)).isCheckable = true
+            menu.findItem(MENU_DESKTOP).isChecked = desktopMode
+            menu.add(0, MENU_SETTINGS, 6, getString(R.string.npmorphe_browser_settings_title))
+            menu.add(0, MENU_DOWNLOADS, 7, getString(R.string.npmorphe_downloads_title))
             setOnMenuItemClickListener { item ->
                 when (item.itemId) {
                     MENU_SET_DEFAULT -> { saveCurrentAsDefault(); true }
                     MENU_RELOAD -> { browserWebView?.reload(); true }
                     MENU_COPY -> { copyCurrentLink(); true }
                     MENU_EXTERNAL -> { openExternalBrowser(); true }
+                    MENU_BOOKMARK -> { browserData.addBookmark(browserWebView?.title.orEmpty(), currentUrl); Toast.makeText(this@InAppBrowserActivity, R.string.npmorphe_browser_bookmark_added, Toast.LENGTH_SHORT).show(); true }
+                    MENU_DESKTOP -> { setDesktopMode(!desktopMode); true }
+                    MENU_SETTINGS -> { startActivity(BrowserSettingsActivity.intent(this@InAppBrowserActivity, currentUrl)); true }
+                    MENU_DOWNLOADS -> { startActivity(DownloadedApksActivity.intent(this@InAppBrowserActivity)); true }
                     else -> false
                 }
             }
         }.show()
+    }
+
+    private fun showTabsMenu(anchor: View) {
+        PopupMenu(this, anchor).apply {
+            menu.add(0, MENU_NEW_TAB, 0, getString(R.string.npmorphe_browser_new_tab))
+            browserTabs.forEachIndexed { index, tab ->
+                val title = tab.title?.takeIf(String::isNotBlank) ?: cleanAddress(tab.url.orEmpty())
+                menu.add(0, MENU_TAB_BASE + index, index + 1, "${index + 1}. $title")
+                    .isChecked = tab === browserWebView
+            }
+            setOnMenuItemClickListener { item ->
+                if (item.itemId == MENU_NEW_TAB) {
+                    openNewTab(browserSearchEngineUrl())
+                    true
+                } else {
+                    val index = item.itemId - MENU_TAB_BASE
+                    if (index in browserTabs.indices) { switchToTab(index); true } else false
+                }
+            }
+        }.show()
+    }
+
+    private fun browserSearchEngineUrl(): String = browserData.state.value.searchUrl("Android apps")
+
+    private fun openNewTab(url: String) {
+        val host = browserTabHost ?: return
+        val template = browserWebView ?: return
+        val tab = WebView(this@InAppBrowserActivity).apply {
+            settings.javaScriptEnabled = true
+            settings.domStorageEnabled = true
+            settings.databaseEnabled = true
+            settings.javaScriptCanOpenWindowsAutomatically = true
+            settings.loadsImagesAutomatically = true
+            settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+            settings.userAgentString = template.settings.userAgentString
+            settings.setSupportMultipleWindows(true)
+            webViewClient = browserWebViewClient ?: WebViewClient()
+            webChromeClient = browserWebChromeClient ?: WebChromeClient()
+            setDownloadListener { downloadUrl, agent, disposition, mimeType, _ ->
+                beginDirectDownload(downloadUrl, agent, disposition, mimeType, this.url.orEmpty())
+            }
+            CookieManager.getInstance().setAcceptCookie(true)
+            CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+        }
+        host.addView(tab, FrameLayout.LayoutParams(-1, -1))
+        browserTabs += tab
+        switchToTab(browserTabs.lastIndex)
+        tab.loadUrl(url)
+    }
+
+    private fun switchToTab(index: Int) {
+        if (index !in browserTabs.indices) return
+        browserTabs.forEachIndexed { i, tab -> tab.visibility = if (i == index) View.VISIBLE else View.GONE }
+        browserWebView = browserTabs[index]
+        currentUrl = browserWebView?.url.orEmpty().ifBlank { currentUrl }
+        addressLabel?.text = cleanAddress(currentUrl, browserWebView?.title)
+        pageLoading = false
+        progressBar?.visibility = View.GONE
+        updateNavigationButtons()
+    }
+
+    private fun setDesktopMode(enabled: Boolean) {
+        desktopMode = enabled
+        browserTabs.forEach { tab ->
+            tab.settings.userAgentString = if (enabled) DESKTOP_USER_AGENT else mobileUserAgent
+            tab.settings.useWideViewPort = enabled
+            tab.settings.loadWithOverviewMode = enabled
+            tab.reload()
+        }
     }
 
     private fun beginAddressEdit() {
@@ -427,13 +614,14 @@ class InAppBrowserActivity : ComponentActivity() {
     }
 
     private fun navigateToAddress(value: String) {
-        val destination = normalizeApkBrowserAddress(value)
+        val address = value.trim()
+        val destination = if (isHttpAddress(address)) address else browserData.state.value.searchUrl(address)
         currentUrl = destination
         val editor = addressEditor
         showAddressLabel()
         browserWebView?.loadUrl(destination)
-        val input = getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
-        editor?.windowToken?.let { input?.hideSoftInputFromWindow(it, 0) }
+        val inputMethodManager = getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
+        editor?.windowToken?.let { inputMethodManager?.hideSoftInputFromWindow(it, 0) }
     }
 
     private fun handleUrlScheme(uri: Uri): Boolean {
@@ -449,7 +637,11 @@ class InAppBrowserActivity : ComponentActivity() {
 
     private fun updateNavigationButtons() {
         reloadButton?.text = if (pageLoading) "×" else "↻"
-        bottomDownloadStatus?.text = if (activeDownloadJob?.isActive == true) {
+        toolbarDownloadStatus?.apply {
+            text = "↓${activeDownloadIds.size}"
+            visibility = if (activeDownloadIds.isNotEmpty()) View.VISIBLE else View.GONE
+        }
+        bottomDownloadStatus?.text = if (activeDownloadId != null) {
             getString(R.string.npmorphe_browser_downloading)
         } else ""
     }
@@ -461,147 +653,21 @@ class InAppBrowserActivity : ComponentActivity() {
         mimeType: String?,
         referer: String
     ) {
-        if (activeDownloadJob?.isActive == true) {
-            Toast.makeText(this, R.string.home_apk_browser_download_in_progress, Toast.LENGTH_SHORT).show()
-            return
-        }
         val agent = userAgent?.takeIf(String::isNotBlank) ?: mobileUserAgent
-        activeDownloadJob = lifecycleScope.launch {
-            showDownloadCard(getString(R.string.npmorphe_browser_download_preparing), 0L, -1L, 0.0)
-            try {
-                val file = withContext(Dispatchers.IO) {
-                    streamDownload(url, agent, referer, contentDisposition, mimeType)
-                }
-                rememberDownloadedFile(file, url)
-                val uri = Uri.fromFile(file)
-                setResult(RESULT_OK, Intent().apply {
-                    putExtra(EXTRA_RESULT_URI, uri.toString())
-                    putExtra(EXTRA_RESULT_FILE_PATH, file.absolutePath)
-                    putExtra(EXTRA_RESULT_URL, url)
-                    putExtra(EXTRA_RESULT_DOWNLOAD_ID, NO_DOWNLOAD_MANAGER_ID)
-                    putExtra(EXTRA_RESULT_PERMANENT, false)
-                })
-                finish()
-            } catch (cancelled: CancellationException) {
-                if (!closingAfterCancel && !isFinishing && !isDestroyed) {
-                    Toast.makeText(this@InAppBrowserActivity, R.string.npmorphe_browser_download_cancelled, Toast.LENGTH_SHORT).show()
-                }
-            } catch (error: Exception) {
-                currentCoroutineContext().ensureActive()
-                android.util.Log.w(TAG, "Direct APK download failed", error)
-                if (!isFinishing && !isDestroyed) {
-                    Toast.makeText(this@InAppBrowserActivity, R.string.npmorphe_browser_download_failed, Toast.LENGTH_LONG).show()
-                }
-            } finally {
-                activeConnection?.disconnect()
-                activeConnection = null
-                activePartFile?.delete()
-                activePartFile = null
-                withContext(NonCancellable + Dispatchers.Main.immediate) {
-                    activeDownloadJob = null
-                    closingAfterCancel = false
-                    if (!isDestroyed) {
-                        downloadCard?.visibility = View.GONE
-                        updateNavigationButtons()
-                    }
-                }
-            }
-        }
-    }
-
-    private suspend fun streamDownload(
-        initialUrl: String,
-        userAgent: String,
-        initialReferer: String,
-        contentDispositionHint: String?,
-        mimeTypeHint: String?
-    ): File {
-        var current = initialUrl
-        var referer = initialReferer.takeIf(String::isNotBlank)
-        var connection: HttpURLConnection? = null
-        try {
-            var redirects = 0
-            while (true) {
-                currentCoroutineContext().ensureActive()
-                val opened = URL(current).openConnection() as? HttpURLConnection
-                    ?: throw IOException(getString(R.string.npmorphe_browser_download_failed))
-                connection = opened
-                activeConnection = opened
-                opened.instanceFollowRedirects = false
-                opened.connectTimeout = CONNECT_TIMEOUT_MILLIS
-                opened.readTimeout = READ_TIMEOUT_MILLIS
-                opened.requestMethod = "GET"
-                opened.setRequestProperty("User-Agent", userAgent)
-                opened.setRequestProperty("Accept", "*/*")
-                referer?.let { opened.setRequestProperty("Referer", it) }
-                CookieManager.getInstance().getCookie(current)
-                    ?.takeIf(String::isNotBlank)
-                    ?.let { opened.setRequestProperty("Cookie", it) }
-
-                val status = opened.responseCode
-                if (status in REDIRECT_CODES) {
-                    val location = opened.getHeaderField("Location")
-                        ?: throw IOException(getString(R.string.npmorphe_browser_download_failed))
-                    if (++redirects > MAX_REDIRECTS) {
-                        throw IOException(getString(R.string.npmorphe_browser_download_failed))
-                    }
-                    val previous = current
-                    current = URL(URL(current), location).toString()
-                    referer = previous
-                    opened.disconnect()
-                    activeConnection = null
-                    continue
-                }
-                if (status !in 200..299) throw IOException("HTTP " + status)
-                val responseMime = opened.contentType ?: mimeTypeHint.orEmpty()
-                if (responseMime.contains("text/html", ignoreCase = true)) {
-                    throw IOException("The page returned HTML instead of an APK.")
-                }
-                val disposition = opened.getHeaderField("Content-Disposition") ?: contentDispositionHint
-                val fileName = resolveDownloadName(current, disposition, responseMime)
-                val directory = File(filesDir, "downloaded_base_apks")
-                if (!directory.exists() && !directory.mkdirs()) {
-                    throw IOException("Could not create the managed APK folder.")
-                }
-                val target = uniqueFile(directory, fileName)
-                val part = File(directory, "." + target.name + ".part")
-                activePartFile = part
-                val totalBytes = opened.getHeaderField("Content-Length")?.toLongOrNull() ?: -1L
-                var lastUpdateAt = SystemClock.elapsedRealtime()
-                var lastUpdateBytes = 0L
-                var downloadedBytes = 0L
-                opened.inputStream.use { input ->
-                    FileOutputStream(part).buffered().use { output ->
-                        val buffer = ByteArray(BUFFER_SIZE)
-                        while (true) {
-                            currentCoroutineContext().ensureActive()
-                            val count = input.read(buffer)
-                            if (count < 0) break
-                            output.write(buffer, 0, count)
-                            downloadedBytes += count
-                            val now = SystemClock.elapsedRealtime()
-                            if (now - lastUpdateAt >= PROGRESS_UPDATE_MILLIS) {
-                                val speed = (downloadedBytes - lastUpdateBytes) * 1000.0 / (now - lastUpdateAt).coerceAtLeast(1L)
-                                showDownloadCard(fileName, downloadedBytes, totalBytes, speed)
-                                lastUpdateAt = now
-                                lastUpdateBytes = downloadedBytes
-                            }
-                        }
-                    }
-                }
-                currentCoroutineContext().ensureActive()
-                if (downloadedBytes <= 0L || !looksLikeZipArchive(part)) {
-                    throw IOException("The response was not a valid APK or bundle.")
-                }
-                if (!part.renameTo(target)) throw IOException("Could not finish saving the APK.")
-                activePartFile = null
-                showDownloadCard(fileName, downloadedBytes, totalBytes, 0.0)
-                return target
-            }
-        } finally {
-            connection?.disconnect()
-            if (activeConnection === connection) activeConnection = null
-        }
+        val fileName = runCatching { resolveDownloadName(url, contentDisposition, mimeType) }.getOrDefault("download.apk")
+        activeDownloadId = ApkDownloadService.enqueue(
+            context = this,
+            url = url,
+            fileName = fileName,
+            packageName = targetPackageName,
+            versionName = requestedVersion,
+            userAgent = agent,
+            cookie = CookieManager.getInstance().getCookie(url),
+            referer = referer
+        )
+        activeDownloadIds += activeDownloadId!!
+        showDownloadCard(fileName, 0L, -1L, 0.0)
+        updateNavigationButtons()
     }
 
     private fun showDownloadCard(fileName: String, downloaded: Long, total: Long, speedBytesPerSecond: Double) {
@@ -641,28 +707,17 @@ class InAppBrowserActivity : ComponentActivity() {
     }
 
     private fun cancelDownload() {
-        closingAfterCancel = false
-        activeConnection?.disconnect()
-        activeDownloadJob?.cancel()
-    }
-
-    private fun confirmCancelDownload(closeWhenCancelled: Boolean) {
-        android.app.AlertDialog.Builder(this)
-            .setTitle(R.string.npmorphe_browser_download_cancel_title)
-            .setMessage(R.string.npmorphe_browser_download_cancel_message)
-            .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton(R.string.npmorphe_browser_download_cancel) { _, _ ->
-                closingAfterCancel = closeWhenCancelled
-                activeConnection?.disconnect()
-                activeDownloadJob?.cancel()
-                if (closeWhenCancelled) finish()
-            }
-            .show()
+        activeDownloadId?.let {
+            ApkDownloadService.cancel(this, it)
+            activeDownloadIds.remove(it)
+        }
+        activeDownloadId = activeDownloadIds.lastOrNull()
+        downloadCard?.visibility = if (activeDownloadId == null) View.GONE else View.VISIBLE
+        updateNavigationButtons()
     }
 
     private fun requestClose() {
-        if (activeDownloadJob?.isActive == true) confirmCancelDownload(closeWhenCancelled = true)
-        else finish()
+        finish()
     }
 
     private fun saveCurrentAsDefault() {
@@ -719,9 +774,11 @@ class InAppBrowserActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        activeConnection?.disconnect()
-        activeDownloadJob?.cancel()
-        browserWebView?.let(::disposeWebView)
+        downloadObserverJob?.cancel()
+        browserTabs.toList().forEach(::disposeWebView)
+        browserTabs.clear()
+        browserWebViewClient = null
+        browserWebChromeClient = null
         super.onDestroy()
     }
 
@@ -736,23 +793,25 @@ class InAppBrowserActivity : ComponentActivity() {
         const val EXTRA_RESULT_URL = "npmorphe.browser.result_url"
         const val EXTRA_RESULT_DOWNLOAD_ID = "npmorphe.browser.result_download_id"
         const val EXTRA_RESULT_PERMANENT = "npmorphe.browser.result_permanent"
+        const val EXTRA_RETURN_ON_DOWNLOAD = "npmorphe.browser.return_on_download"
         const val NO_DOWNLOAD_MANAGER_ID = -1L
         private const val DOWNLOAD_PREFERENCES = "npmorphe_downloaded_base_apks"
         private const val DARK_BACKGROUND = 0xFF121212.toInt()
         private const val DARK_TOOLBAR = 0xFF191919.toInt()
         private const val DARK_PILL = 0xFF2B2B2B.toInt()
-        private const val PROGRESS_UPDATE_MILLIS = 180L
-        private const val MAX_REDIRECTS = 10
-        private const val CONNECT_TIMEOUT_MILLIS = 30_000
-        private const val READ_TIMEOUT_MILLIS = 60_000
-        private const val BUFFER_SIZE = 64 * 1024
         private const val BYTES_PER_MEGABYTE = 1024.0 * 1024.0
         private const val TAG = "NPmorpheBrowser"
         private const val MENU_SET_DEFAULT = 1
         private const val MENU_RELOAD = 2
         private const val MENU_COPY = 3
         private const val MENU_EXTERNAL = 4
-        private val REDIRECT_CODES = setOf(301, 302, 303, 307, 308)
+        private const val MENU_BOOKMARK = 5
+        private const val MENU_DESKTOP = 6
+        private const val MENU_SETTINGS = 7
+        private const val MENU_DOWNLOADS = 8
+        private const val MENU_NEW_TAB = 9
+        private const val MENU_TAB_BASE = 100
+        private const val DESKTOP_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
         fun intent(
             context: Context,
@@ -760,13 +819,15 @@ class InAppBrowserActivity : ComponentActivity() {
             packageName: String?,
             appName: String?,
             requestedVersion: String?,
-            isStandalone: Boolean
+            isStandalone: Boolean,
+            returnOnDownload: Boolean = false
         ) = Intent(context, InAppBrowserActivity::class.java).apply {
             putExtra(EXTRA_INITIAL_URL, initialUrl)
             putExtra(EXTRA_PACKAGE_NAME, packageName)
             putExtra(EXTRA_APP_NAME, appName)
             putExtra(EXTRA_REQUESTED_VERSION, requestedVersion)
             putExtra(EXTRA_STANDALONE, isStandalone)
+            putExtra(EXTRA_RETURN_ON_DOWNLOAD, returnOnDownload)
         }
 
         fun findLatestDownloadedBaseApk(
@@ -854,24 +915,6 @@ private fun safeDownloadName(name: String) =
         .replace(Regex("[^A-Za-z0-9._-]"), "_")
         .take(150)
         .ifBlank { "download.apk" }
-
-private fun uniqueFile(directory: File, name: String): File {
-    val extension = name.substringAfterLast('.', "").takeIf(String::isNotBlank)?.let { ".$it" }.orEmpty()
-    val base = if (extension.isBlank()) name else name.removeSuffix(extension)
-    var candidate = File(directory, name)
-    var index = 1
-    while (candidate.exists()) {
-        candidate = File(directory, base + " (" + index + ")" + extension)
-        index++
-    }
-    return candidate
-}
-
-private fun looksLikeZipArchive(file: File): Boolean = runCatching {
-    FileInputStream(file).use { input ->
-        input.read() == 0x50 && input.read() == 0x4b && input.read() in 0x03..0x05
-    }
-}.getOrDefault(false)
 
 private fun isApkFileName(name: String): Boolean {
     val lower = name.lowercase(Locale.ROOT)

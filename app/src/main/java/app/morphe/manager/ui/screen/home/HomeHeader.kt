@@ -20,6 +20,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.pluralStringResource
@@ -30,6 +31,8 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import app.morphe.manager.R
+import app.morphe.manager.domain.repository.ApkDownloadManager
+import app.morphe.manager.domain.repository.ApkDownloadStatus
 import app.morphe.manager.ui.screen.shared.Animations
 import app.morphe.manager.ui.screen.shared.Defaults
 import app.morphe.manager.ui.screen.shared.HeaderBar
@@ -46,6 +49,8 @@ import app.morphe.manager.ui.screen.shared.rememberLatest
 import app.morphe.manager.util.contrastingContent
 import com.composables.icons.materialsymbols.MaterialSymbols
 import com.composables.icons.materialsymbols.rounded.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import org.koin.compose.koinInject
 
 /**
  * Heads the apps page with the Morphe wordmark. Its controls bring back the alerts swiped aside,
@@ -66,11 +71,15 @@ internal fun HomeHeader(
     onSortClick: () -> Unit,
     onPatchFileClick: () -> Unit,
     onOpenHistory: () -> Unit,
+    onOpenDownloads: () -> Unit,
+    onOpenBrowser: () -> Unit,
     reorder: ListReorder? = null,
     // Set while the tour runs, which points at the button for other apps
     tour: OnboardingState? = null
 ) {
     val appName = stringResource(R.string.app_name)
+    val downloads by koinInject<ApkDownloadManager>().downloads.collectAsStateWithLifecycle()
+    val activeDownloadCount = downloads.count { it.status == ApkDownloadStatus.QUEUED || it.status == ApkDownloadStatus.DOWNLOADING }
     HeaderBar(
         title = {
             // At the start of the room the controls leave it, as a page's title is
@@ -142,12 +151,43 @@ internal fun HomeHeader(
                 style = TitleActionStyle.Neutral
             )
 
+            if (activeDownloadCount > 0) {
+                BadgedBox(
+                    badge = {
+                        Badge {
+                            Text(activeDownloadCount.toString(), modifier = Modifier.clearAndSetSemantics {})
+                        }
+                    }
+                ) {
+                    TitleAction(
+                        icon = MaterialSymbols.Rounded.Download,
+                        contentDescription = pluralStringResource(R.plurals.npmorphe_home_active_download_count, activeDownloadCount, activeDownloadCount),
+                        onClick = onOpenDownloads,
+                        style = TitleActionStyle.Neutral
+                    )
+                }
+            } else {
+                TitleAction(
+                    icon = MaterialSymbols.Rounded.Download,
+                    contentDescription = stringResource(R.string.npmorphe_downloaded_apks),
+                    onClick = onOpenDownloads,
+                    style = TitleActionStyle.Neutral
+                )
+            }
+
             TitleAction(
                 icon = MaterialSymbols.Rounded.File_open,
                 contentDescription = stringResource(R.string.home_other_apps_action),
                 onClick = onPatchFileClick,
                 style = TitleActionStyle.Accent,
                 modifier = Modifier.tourTarget(TourTarget.OTHER_APPS, tour)
+            )
+
+            TitleAction(
+                icon = MaterialSymbols.Rounded.Language,
+                contentDescription = stringResource(R.string.npmorphe_browser_settings_title),
+                onClick = onOpenBrowser,
+                style = TitleActionStyle.Neutral
             )
         }
     )

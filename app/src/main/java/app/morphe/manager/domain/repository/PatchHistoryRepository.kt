@@ -7,6 +7,7 @@ package app.morphe.manager.domain.repository
 
 import android.app.Application
 import app.morphe.manager.domain.manager.PreferencesManager
+import app.morphe.manager.domain.manager.DownloadAutoDeleteMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -44,12 +45,14 @@ data class PatchHistoryEntry(
     val installConfirmedAtMillis: Long? = null,
     val previousVersionName: String? = null,
     val previousVersionCode: Long? = null,
+    val apkSizeBytes: Long? = null,
 )
 
 /** Stores patch and install history in manager-owned files, so removing the target app leaves it intact. */
 class PatchHistoryRepository(
     private val app: Application,
     private val prefs: PreferencesManager,
+    private val apkDownloads: ApkDownloadManager,
 ) {
     private val historyFile = File(app.filesDir, HISTORY_FILE_NAME)
     private val mutex = Mutex()
@@ -58,6 +61,9 @@ class PatchHistoryRepository(
     val entries: StateFlow<List<PatchHistoryEntry>> = _entries.asStateFlow()
 
     suspend fun record(entry: PatchHistoryEntry) {
+        if (prefs.downloadAutoDeleteMode.get() == DownloadAutoDeleteMode.AFTER_PATCH) {
+            apkDownloads.deleteCompletedForPackage(entry.packageName)
+        }
         if (!prefs.patchHistoryEnabled.get()) return
         if (entry.packageName in prefs.patchHistoryDisabledApps.get()) return
         withContext(Dispatchers.IO) {
@@ -104,6 +110,20 @@ class PatchHistoryRepository(
             persist(retained)
         }
     }
+
+    suspend fun delete(id: String) = withContext(Dispatchers.IO) {
+        mutex.withLock { persist(_entries.value.filterNot { it.id == id }) }
+    }
+
+    suspend fun replaceAll(entries: List<PatchHistoryEntry>) = withContext(Dispatchers.IO) {
+        mutex.withLock { persist(entries.sortedByDescending { it.patchCompletedAtMillis }) }
+    }
+
+    suspend fun replaceAllJson(raw: String) {
+        replaceAll(json.decodeFromString<List<PatchHistoryEntry>>(raw))
+    }
+
+    fun exportJson(): String = json.encodeToString(_entries.value)
 
     private fun persist(entries: List<PatchHistoryEntry>) {
         historyFile.parentFile?.mkdirs()

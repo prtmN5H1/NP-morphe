@@ -478,6 +478,7 @@ class PatcherWorker(
                         outputVersionName = outputPackageInfo?.versionName,
                         outputVersionCode = outputPackageInfo?.let(pm::getVersionCode),
                         patchCompletedAtMillis = System.currentTimeMillis(),
+                        apkSizeBytes = File(args.output).length(),
                     )
                 )
             }.onFailure { Log.w(LOG_TAG, "Could not record patch history for $outputPackageName", it) }

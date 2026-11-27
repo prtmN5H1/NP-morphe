@@ -99,6 +99,7 @@ internal fun SourcesSelectionBar(
         enableLabel: String,
         disableLabel: String,
         icon: ImageVector,
+        disableIcon: ImageVector = icon,
         exitsOnEnable: Boolean = true,
         onSet: (List<PatchBundleSource>, Boolean) -> Unit
     ) {
@@ -116,7 +117,7 @@ internal fun SourcesSelectionBar(
             )
         }
         if (on.isNotEmpty()) {
-            add(SelectionAction(icon, disableLabel, acting { onSet(on, false) }))
+            add(SelectionAction(disableIcon, disableLabel, acting { onSet(on, false) }))
         }
     }
 
@@ -144,9 +145,10 @@ internal fun SourcesSelectionBar(
             addSettingSwitch(
                 applicable = selected.filterIsInstance<RemotePatchBundle>(),
                 isOn = { it.uid.toString() in loadingPaused },
-                enableLabel = stringResource(R.string.npmorphe_source_loading_pause_action),
-                disableLabel = stringResource(R.string.npmorphe_source_resume_loading_action),
+                enableLabel = stringResource(R.string.npmorphe_source_loading_disable_selection),
+                disableLabel = stringResource(R.string.npmorphe_source_loading_enable_selection),
                 icon = MaterialSymbols.Rounded.Pause,
+                disableIcon = MaterialSymbols.Rounded.Play_arrow,
                 onSet = onSetLoadingPaused
             )
         }
