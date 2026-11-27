@@ -50,12 +50,12 @@ import app.morphe.manager.domain.manager.PreferencesManager
 import app.morphe.manager.domain.repository.ApkDownloadManager
 import app.morphe.manager.domain.repository.ApkDownloadRecord
 import app.morphe.manager.domain.repository.ApkDownloadStatus
+import app.morphe.manager.service.ApkDownloadService
 import app.morphe.manager.ui.theme.ManagerTheme
 import app.morphe.manager.ui.theme.Theme
 import app.morphe.manager.ui.theme.ThemeStyle
 import app.morphe.manager.ui.theme.ThemeTraits
 import app.morphe.manager.ui.theme.resolveThemeStyle
-import app.morphe.manager.util.getAsState
 import app.morphe.manager.ui.screen.shared.AppIcon
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.Dispatchers

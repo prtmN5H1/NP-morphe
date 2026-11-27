@@ -356,7 +356,7 @@ class InAppBrowserActivity : ComponentActivity() {
                     val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
                     transport.webView = popup
                     resultMsg.sendToTarget()
-                    true
+                    return true
                 }
             }
             browserWebViewClient = sharedWebViewClient

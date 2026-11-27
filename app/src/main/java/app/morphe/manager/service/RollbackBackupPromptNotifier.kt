@@ -15,7 +15,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-import org.koin.android.ext.android.inject
+import org.koin.core.component.KoinComponent
+import org.koin.core.component.inject
 
 object RollbackBackupPromptNotifier {
     private const val CHANNEL_ID = "npmorphe_rollback_cleanup"
@@ -74,7 +75,7 @@ object RollbackBackupPromptNotifier {
     private fun notificationId(packageName: String) = packageName.hashCode().and(Int.MAX_VALUE).coerceAtLeast(1)
 }
 
-class RollbackBackupPromptActionReceiver : BroadcastReceiver() {
+class RollbackBackupPromptActionReceiver : BroadcastReceiver(), KoinComponent {
     private val backups: RollbackBackupRepository by inject()
 
     override fun onReceive(context: Context, intent: Intent) {

@@ -112,7 +112,7 @@ fun SourcesPage(
     }
     val importExportViewModel: ImportExportViewModel = koinViewModel()
     val pendingArchiveExportUids = remember { mutableStateOf<Set<Int>?>(null) }
-    val sourceImportReport by importExportViewModel.sourceImportReport
+    val sourceImportReport = importExportViewModel.sourceImportReport
     val context = LocalContext.current
     val saveSourceArchive = rememberDocumentSaver(SOURCE_ARCHIVE_MIMETYPE) { uri ->
         // Set by the selection action before the document picker is launched.
@@ -261,7 +261,7 @@ fun SourcesPage(
 }
 
 @Composable
-private fun SourceImportReportDialog(report: SourceImportReport, onDismiss: () -> Unit) {
+private fun DialogHostScope.SourceImportReportDialog(report: SourceImportReport, onDismiss: () -> Unit) {
     val context = LocalContext.current
     val summary = stringResource(R.string.npmorphe_import_report_summary, report.imported, report.duplicates, report.failed)
     val statusLabels = report.items.map { item ->

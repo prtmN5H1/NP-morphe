@@ -27,6 +27,7 @@ import app.morphe.manager.domain.backup.AutoBackup
 import app.morphe.manager.domain.backup.SettingsExporter
 import app.morphe.manager.domain.backup.SettingsExporter.Companion.json
 import app.morphe.manager.domain.backup.SettingsExporter.Companion.settingsJson
+import app.morphe.manager.domain.bundles.SourceUrl
 import app.morphe.manager.domain.manager.HomeAppButtonPreferences
 import app.morphe.manager.domain.manager.KeystoreManager
 import app.morphe.manager.domain.manager.PreferencesManager
@@ -649,7 +650,7 @@ class ImportExportViewModel(
                 if (error is CancellationException) throw error
                 val reason = error.message ?: "Import failed"
                 val failedSources = archiveSources.ifEmpty {
-                    listOf(BundleSnapshot(name = source.displayName(contentResolver).orEmpty().ifBlank { "Source archive" }, source = source.toString()))
+                    listOf(BundleSnapshot(name = source.displayName(contentResolver).orEmpty().ifBlank { "Source archive" }, source = source.toString(), sortOrder = 0))
                 }
                 publishSourceImportReport(failedSources.map {
                     SourceImportReportItem(it.displayName ?: it.name, it.source, SourceImportStatus.FAILED, reason)
@@ -712,7 +713,7 @@ class ImportExportViewModel(
     }
 
     private fun normalizeSourceKey(url: String): String = runCatching {
-        app.morphe.manager.domain.bundles.SourceUrl.normalizeBundleUrl(url)
+        SourceUrl.normalizeBundleUrl(url)
     }.getOrDefault(url).trim().trimEnd('/').lowercase(Locale.US)
 
     /** Converts a plain TAR or gzip-compressed TAR into a bounded ZIP stream for the normal parser. */
