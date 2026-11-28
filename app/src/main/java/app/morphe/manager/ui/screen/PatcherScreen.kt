@@ -28,7 +28,6 @@ import app.morphe.manager.domain.links.AppLinksManager
 import app.morphe.manager.domain.links.AppLinksStatus
 import app.morphe.manager.domain.manager.PreferencesManager
 import app.morphe.manager.patcher.patch.installerTypeFor
-import app.morphe.manager.ui.model.RenameWarning
 import app.morphe.manager.ui.screen.home.AppLinksDialog
 import app.morphe.manager.ui.screen.patcher.*
 import app.morphe.manager.ui.screen.settings.system.InstallerFlowDialogs
@@ -41,15 +40,8 @@ import app.morphe.manager.util.rememberDocumentSaver
 import app.morphe.manager.util.shareApks
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import org.koin.androidx.compose.koinViewModel
 import org.koin.compose.koinInject
 import kotlin.time.Duration.Companion.milliseconds
-
-/** An install held back until the user accepts that it lands beside the app rather than on it. */
-private data class HeldInstall(
-    val warning: RenameWarning,
-    val start: () -> Unit
-)
 
 /**
  * Patcher screen with progress tracking.
@@ -59,13 +51,14 @@ private data class HeldInstall(
 fun PatcherScreen(
     onBackClick: () -> Unit,
     patcherViewModel: PatcherViewModel,
-    installViewModel: InstallViewModel = koinViewModel(),
+    installViewModel: InstallViewModel,
     prefs: PreferencesManager = koinInject(),
     onBackgroundSpeedChange: (Float) -> Unit = {},
     onPatchingCompleted: () -> Unit = {},
     onStartTour: () -> Unit = {},
     onDeclineTour: () -> Unit = {},
-    onChangePatches: () -> Unit = {}
+    onChangePatches: () -> Unit = {},
+    onOpenGames: (() -> Unit)? = null
 ) {
     // Worn by everything the screen shows, its dialogs included, down to the install button
     ProvideAccent(rememberAppColor(patcherViewModel.packageName)) {
@@ -78,7 +71,8 @@ fun PatcherScreen(
             onPatchingCompleted = onPatchingCompleted,
             onStartTour = onStartTour,
             onDeclineTour = onDeclineTour,
-            onChangePatches = onChangePatches
+            onChangePatches = onChangePatches,
+            onOpenGames = onOpenGames
         )
     }
 }
@@ -93,7 +87,8 @@ private fun PatcherScreenContent(
     onPatchingCompleted: () -> Unit,
     onStartTour: () -> Unit,
     onDeclineTour: () -> Unit,
-    onChangePatches: () -> Unit
+    onChangePatches: () -> Unit,
+    onOpenGames: (() -> Unit)?
 ) {
     val view = LocalView.current
     val context = LocalContext.current
@@ -128,13 +123,20 @@ private fun PatcherScreenContent(
         onSpeedChange = onBackgroundSpeedChange
     )
 
+    // The buzz marks the moment the run ends, so a screen composed again after it, by a rotation
+    // or on the way back from the games, stays quiet while the completion effect is restored
+    var completionFelt by rememberSaveable { mutableStateOf(false) }
+
     // Patching finished - the speed resets first, then the completion effect fires
     LaunchedEffect(patcherSucceeded) {
         if (patcherSucceeded == true && patcherViewModel.patchingCompletedInForeground) {
             delay(300.milliseconds) // small pause so speed resets before effect fires
             onPatchingCompleted()
             // Haptic feedback
-            view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+            if (!completionFelt) {
+                completionFelt = true
+                view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+            }
         }
     }
 
@@ -181,20 +183,6 @@ private fun PatcherScreenContent(
                     downloadManagerId = patcherViewModel.downloadManagerId
                 )
             }
-        }
-    }
-
-    // Auto-install: driven by ViewModel so it fires in the background even if the app is not
-    // in the foreground when patching completes. UI-only guards checked here.
-    LaunchedEffect(Unit) {
-        patcherViewModel.autoInstallEvent.collect {
-            // An install the user already started takes its place
-            if (installViewModel.installState is InstallViewModel.InstallState.Ready) {
-                installPatchedApp(automatic = true)
-            }
-            // The installer owns the state from here, and an attempt that ends in nothing must
-            // not leave the screen claiming an install forever
-            patcherViewModel.autoInstallHandedOff()
         }
     }
 
@@ -395,19 +383,14 @@ private fun PatcherScreenContent(
         )
     }
 
-    // Where the finished APK will actually install, when that is not what the run was aimed at
-    DialogHost(target = heldInstall?.takeIf { installPromptsShown }) { held ->
+    // Where the finished APK will actually install, when that is not what the run was aimed at.
+    // A build that answers to a package name of its own installs beside the app instead of
+    // updating it, so every install path waits on this until the user has been told once
+    DialogHost(target = patcherViewModel.heldInstallWarning?.takeIf { installPromptsShown }) { warning ->
         RenameWarningDialog(
-            warning = held.warning,
-            onContinue = {
-                renameConfirmed = true
-                heldInstall = null
-                held.start()
-            },
-            onDismiss = {
-                renameDeclined = true
-                heldInstall = null
-            }
+            warning = warning,
+            onContinue = patcherViewModel::confirmRename,
+            onDismiss = patcherViewModel::declineRename
         )
     }
 
@@ -450,7 +433,7 @@ private fun PatcherScreenContent(
             installState is InstallViewModel.InstallState.Ready &&
             // Auto-install stops at the rename warning, so the screen must
             // not go on claiming install the user has yet to allow
-            heldInstall == null && !renameDeclined
+            patcherViewModel.heldInstallWarning == null && !patcherViewModel.renameDeclined
     // The state the result screen and the way back to it are drawn from answers two things the
     // installer's own does not: an auto-install is under way before it is reported, and a
     // conflict this run resolves by dialog is not a screen state at all
@@ -489,7 +472,8 @@ private fun PatcherScreenContent(
                             patcherSucceeded = patcherSucceeded,
                             onCancelClick = { showCancelDialog = true },
                             resultButton = resultButton(shownInstallState, installedPackageName, usingMountInstall),
-                            onResultClick = { patcherViewModel.showSuccess() }
+                            onResultClick = { patcherViewModel.showSuccess() },
+                            onGamesClick = onOpenGames
                         )
                     } else {
                         SimplePatchingInProgress(
@@ -498,7 +482,8 @@ private fun PatcherScreenContent(
                             patchProgress = patcherViewModel.patchRun,
                             packageName = patcherViewModel.packageName,
                             showLongStepWarning = showLongStepWarning,
-                            onCancelClick = { showCancelDialog = true }
+                            onCancelClick = { showCancelDialog = true },
+                            onGamesClick = onOpenGames
                         )
                     }
                 }
@@ -510,7 +495,7 @@ private fun PatcherScreenContent(
                         installedPackageName = installedPackageName,
                         usingMountInstall = usingMountInstall,
                         installActions = InstallResultActions(
-                            onInstall = { scope.launch { installPatchedApp(automatic = false) } },
+                            onInstall = patcherViewModel::installPatchedApp,
                             onUninstall = { packageName ->
                                 installViewModel.requestUninstall(packageName, installAfterUninstall = true)
                             },
@@ -538,10 +523,11 @@ private fun PatcherScreenContent(
                             scope.launch {
                                 // Shared under the name a save would give it, not the working one
                                 val name = patcherViewModel.resolvedExportFileName()
-                                context.shareApks(listOf(outputFile)) { name }
+                                context.shareApks(listOf(patcherViewModel.outputFile)) { name }
                             }
                         },
-                        isSaving = isSaving
+                        isSaving = isSaving,
+                        onGamesClick = onOpenGames
                     )
                 }
 
@@ -553,7 +539,8 @@ private fun PatcherScreenContent(
                         onHomeClick = onBackClick,
                         onErrorClick = { shownFailure = PatcherFailure.PATCHING },
                         // Simple mode keeps no selection of its own to return to
-                        onChangePatchesClick = onChangePatches.takeIf { useExpertMode }
+                        onChangePatchesClick = onChangePatches.takeIf { useExpertMode },
+                        onGamesClick = onOpenGames
                     )
                 }
             }

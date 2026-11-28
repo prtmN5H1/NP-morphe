@@ -14,11 +14,12 @@ import androidx.compose.runtime.Stable
 import app.morphe.manager.domain.repository.PatchBundleHeldBackException
 import app.morphe.manager.patcher.patch.PatchBundle
 import app.morphe.manager.util.CodeHost
-import app.morphe.manager.util.GITHUB_HOST
+import app.morphe.manager.util.FilenameUtils
 import app.morphe.manager.util.JSON_EXTENSION
 import app.morphe.manager.util.MORPHE_GITHUB_ORG
+import app.morphe.manager.util.MPP_EXTENSION
 import app.morphe.manager.util.SourceUrl
-import app.morphe.manager.util.hasZipHeader
+import app.morphe.manager.util.requireCompleteZip
 import app.morphe.manager.util.isPatcherOutdated
 import app.morphe.patcher.patch.PatchBundleSignature
 import java.io.File
@@ -86,6 +87,19 @@ sealed class PatchBundleSource(
     val displayTitle get() = displayName?.takeUnless { it.isBlank() } ?: name
 
     /**
+     * The installed patches.jar, null while none is. It is also there for a source whose patches
+     * fail to load, so those can still be saved before the repository behind them is gone.
+     */
+    val installedPatchesFile: File? by lazy { patchesFile.takeIf(File::exists) }
+
+    /** Name [installedPatchesFile] is offered under when saved, the title and version as a .mpp. */
+    val exportFileName: String
+        get() = listOfNotNull(
+            FilenameUtils.sanitize(displayTitle, keepScripts = true).ifEmpty { "patches" },
+            version?.let(FilenameUtils::sanitize)?.takeIf { it.isNotEmpty() }
+        ).joinToString("-") + ".$MPP_EXTENSION"
+
+    /**
      * When the installed release came out, kept in [createdAt] by each update. A source whose
      * releases carry no date, as a local file, holds the time it was added there instead.
      */
@@ -138,8 +152,7 @@ sealed class PatchBundleSource(
             runCatching { staging.setWritable(true, true) }
             runCatching { staging.delete() }
             write(staging)
-            requireNonEmptyBundleFile(staging, context)
-            val signer = requireTrustedSigner(staging, publishedKey)
+            val signer = requireTrustedSigner(staging, context, publishedKey)
             staging.setReadOnly()
             // Replaces the installed bundle in a single step, so readers see either the old
             // file or the new one
@@ -179,14 +192,17 @@ sealed class PatchBundleSource(
     }
 
     /**
-     * Checks that [file] is signed by [signingKey], or by [publishedKey] while the source has no
-     * key yet. A source with neither takes any bundle, signed nor not.
+     * Checks that [file] is a whole bundle signed by [signingKey], or by [publishedKey] while the
+     * source has no key yet. A source with neither takes any bundle, signed nor not.
      *
      * @return The key [file] is signed with, to pin with [pinSigningKey] once it is installed.
+     * @throws IOException If [file] is not a whole zip archive, which [context] names the source of.
      * @throws SecurityException If the signature does not match the content of [file].
      * @throws PatchBundleSignerChangedException If [file] is not signed by the expected key.
      */
-    protected fun requireTrustedSigner(file: File, publishedKey: String? = null): String? {
+    protected fun requireTrustedSigner(file: File, context: String, publishedKey: String? = null): String? {
+        // The signature sits at the very end, so a bundle cut short would read as an unsigned one
+        file.requireCompleteZip(context)
         val signer = PatchBundleSignature.verify(file)
         // Read again rather than from signingKey, which a key trusted since then does not change
         val expected = readSigningKey() ?: publishedKey
@@ -218,7 +234,6 @@ sealed class PatchBundleSource(
     }
 
     companion object Extensions {
-        private const val MIN_PATCH_BUNDLE_BYTES = 8L
         private const val STAGING_FILE_NAME = "patches.jar.tmp"
         private const val SIGNING_KEY_FILE_NAME = "signing.key"
         val PatchBundleSource.isDefault inline get() = uid == 0
@@ -298,22 +313,14 @@ sealed class PatchBundleSource(
         )
 
         /**
-         * Pick the best avatar URLs for a source. Preference order is custom bundle avatar,
-         * then GitHub, then GitLab; whichever is chosen as [AvatarUrls.primary], the next
-         * available one becomes [AvatarUrls.fallback].
+         * Pick the best avatar URLs for a source: the custom bundle avatar, then the picture of
+         * the repository owner, which backs the bundle avatar up when there is one.
          */
         val PatchBundleSource.avatarUrls: AvatarUrls get() {
-            val bundle = bundleAvatarUrl
-            val github = githubAvatarUrl
-            val gitlab = gitlabAvatarUrl
-            return AvatarUrls(
-                primary = bundle ?: github ?: gitlab,
-                fallback = when {
-                    bundle != null -> github ?: gitlab
-                    github != null -> gitlab
-                    else -> null
-                }
-            )
+            val endpoint = (this as? RemotePatchBundle)?.endpoint
+            val bundle = endpoint?.let(::bundleAvatarUrl)
+            val owner = endpoint?.let(::ownerAvatarUrl)
+            return AvatarUrls(primary = bundle ?: owner, fallback = owner.takeIf { bundle != null })
         }
 
         /**
@@ -321,12 +328,10 @@ sealed class PatchBundleSource(
          * or pull request of the project, which all wear the logo rather than the owner's avatar.
          */
         val PatchBundleSource.isMorpheSource: Boolean get() =
-            isDefault || (this as? RemotePatchBundle)?.let { ownerOn(it.endpoint, CodeHost.GITHUB) }
-                .equals(MORPHE_GITHUB_ORG, ignoreCase = true)
-
-        /** Get custom bundle avatar URL, see [bundleAvatarUrl]. */
-        val PatchBundleSource.bundleAvatarUrl: String? get() =
-            (this as? RemotePatchBundle)?.let { bundleAvatarUrl(it.endpoint) }
+            isDefault || (this as? RemotePatchBundle)
+                ?.let { SourceUrl.parse(it.endpoint) }
+                ?.takeIf { it.codeHost == CodeHost.GITHUB }
+                ?.owner.equals(MORPHE_GITHUB_ORG, ignoreCase = true)
 
         /**
          * The PNG named after the bundle JSON at [endpoint], next to it.
@@ -341,32 +346,10 @@ sealed class PatchBundleSource(
         }
 
         /**
-         * Get GitHub avatar URL if this bundle is from a GitHub repository.
-         * Returns null for GitLab bundles (use [gitlabAvatarUrl] instead).
-         */
-        val PatchBundleSource.githubAvatarUrl: String? get() =
-            (this as? RemotePatchBundle)?.let { ownerOn(it.endpoint, CodeHost.GITHUB) }?.let(::githubAvatar)
-
-        /**
-         * Get GitLab avatar URL via unavatar.io if this bundle is from a GitLab repository.
-         */
-        val PatchBundleSource.gitlabAvatarUrl: String? get() =
-            (this as? RemotePatchBundle)?.let { ownerOn(it.endpoint, CodeHost.GITLAB) }?.let(::gitlabAvatar)
-
-        /**
-         * Avatar of whoever owns the GitHub or GitLab repository [url] points at, for a source
+         * Avatar of whoever owns the [CodeHost] repository [url] points at, also for a source
          * that is not added yet. Null for any other host.
          */
-        fun ownerAvatarUrl(url: String): String? =
-            ownerOn(url, CodeHost.GITHUB)?.let(::githubAvatar) ?: ownerOn(url, CodeHost.GITLAB)?.let(::gitlabAvatar)
-
-        private fun githubAvatar(owner: String) = "https://$GITHUB_HOST/$owner.png"
-
-        private fun gitlabAvatar(owner: String) = "https://unavatar.io/gitlab/$owner"
-
-        /** Owner of the repository [url] points at on [host], or null for any other host. */
-        private fun ownerOn(url: String, host: CodeHost): String? =
-            SourceUrl.parse(url)?.takeIf { it.codeHost == host }?.owner
+        fun ownerAvatarUrl(url: String): String? = SourceUrl.parse(url)?.ownerAvatarUrl
     }
 }
 

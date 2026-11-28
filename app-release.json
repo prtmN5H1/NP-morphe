@@ -1,8 +1,8 @@
 {
-  "created_at": "2026-11-27T07:36:18Z",
-  "description": "Forced custom build from main; no upstream tag was available.\n\nBuilt and signed by NPmorphe as a manually forced custom release.",
-  "download_url": "https://github.com/prtmN5H1/NP-morphe/releases/download/v2.7.1/NPmorphe-2.7.1.apk",
+  "created_at": "2026-11-26T18:39:36Z",
+  "description": "NPmorphe based on upstream v2.9.0-dev.1.\n\nBuilt and signed by NPmorphe.",
+  "download_url": "https://github.com/prtmN5H1/NP-morphe/releases/download/v2.9.0-dev.1/NPmorphe-2.9.0-dev.1.apk",
   "signature_download_url": "",
-  "version": "2.7.1",
-  "upstream_tag": null
+  "version": "2.9.0-dev.1",
+  "upstream_tag": "v2.9.0-dev.1"
 }

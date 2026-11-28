@@ -457,11 +457,11 @@ class PatchBundleRepository(
             }
         }
 
-        // Fallbacks for common GitHub URL patterns.
+        // Fallbacks for code host URL patterns.
         if (segments.isEmpty()) return host
-        return when (host) {
-            GITHUB_HOST -> source.repo ?: host
-            GITHUB_API_HOST if segments.size >= 3 && segments[0] == "repos" -> segments[2]
+        return when {
+            source.codeHost != null -> source.repo ?: host
+            host == GITHUB_API_HOST && segments.size >= 3 && segments[0] == "repos" -> segments[2]
             else -> host
         }
     }
@@ -1203,7 +1203,7 @@ class PatchBundleRepository(
                                     }
                                     reportProgress(0, BundleImportPhase.Downloading, bytesTotal = copyTotal)
 
-                                    sha256Of(input) { buffer, read ->
+                                    input.sha256Digest { buffer, read ->
                                         output.write(buffer, 0, read)
                                         copyRead += read
                                         reportProgress(0, BundleImportPhase.Downloading, copyRead, copyTotal)
@@ -1280,19 +1280,6 @@ class PatchBundleRepository(
         return importedUid
     }
 
-    /** Reads [input] to its end, handing each chunk to [onChunk] as it goes, and returns its SHA-256. */
-    private inline fun sha256Of(input: InputStream, onChunk: (buffer: ByteArray, read: Int) -> Unit = { _, _ -> }): ByteArray {
-        val sha256 = MessageDigest.getInstance("SHA-256")
-        val buffer = ByteArray(256 * 1024)
-        while (true) {
-            val read = input.read(buffer)
-            if (read == -1) break
-            sha256.update(buffer, 0, read)
-            onChunk(buffer, read)
-        }
-        return sha256.digest()
-    }
-
     /** The uid a local source is saved under, derived from the SHA-256 of its file's contents. */
     private fun localUidOf(contentDigest: ByteArray): Int {
         val digest = MessageDigest.getInstance("SHA-256").digest(contentDigest)
@@ -1308,7 +1295,7 @@ class PatchBundleRepository(
      * @param manifestName The bundle name the file's manifest declares, which a new version keeps.
      */
     suspend fun checkLocal(manifestName: String?, createStream: suspend () -> InputStream): LocalFileCheck {
-        val uid = localUidOf(withContext(Dispatchers.IO) { createStream().use { sha256Of(it) } })
+        val uid = localUidOf(withContext(Dispatchers.IO) { createStream().use { it.sha256Digest() } })
         val sources = (store.state.value as? BundleState.Ready)?.sources ?: persistentMapOf()
         if (uid in sources) return LocalFileCheck.Duplicate
 
@@ -1555,7 +1542,7 @@ class PatchBundleRepository(
     private suspend fun awaitReady(): BundleState.Ready =
         bundleState.filterIsInstance<BundleState.Ready>().first()
 
-    /** Returns the blocklist key for a normalized bundle URL, or null for non-GitHub/GitLab hosts. */
+    /** Returns the blocklist key for a normalized bundle URL, or null for hosts other than a [CodeHost]. */
     private fun toBlocklistKey(normalizedUrl: String): String? =
         SourceUrl.parse(normalizedUrl)?.repositoryKey?.lowercase(Locale.US)
 
@@ -1784,30 +1771,28 @@ class PatchBundleRepository(
     }
 
     /**
-     * Suspends until any currently active update job completes.
-     */
-    private suspend fun awaitCurrentUpdateJob() {
-        val job = updateJobMutex.withLock { updateJob }
-        job?.join()
-    }
-
-    /**
      * Same as [updateCheck] but suspends until the update job fully completes.
-     * Waits for any in-progress update to finish first, then runs its own update directly.
+     * Waits for any in-progress update to finish first, then runs its own one as [updateJob].
      *
      * @param reportUpToDate False for a check whose caller already shows it ran, which then ends
      *   without a progress result when nothing was new.
      */
     suspend fun updateCheckAndAwait(allowUnsafeNetwork: Boolean = false, reportUpToDate: Boolean = true) {
         awaitReady()
-        awaitCurrentUpdateJob()
-        performRemoteUpdateWithResult(
-            UpdateRequest(
-                target = UpdateTarget(allEnabled = true),
-                allowUnsafeNetwork = allowUnsafeNetwork,
-                reportUpToDate = reportUpToDate,
-            )
+        val request = UpdateRequest(
+            target = UpdateTarget(allEnabled = true),
+            allowUnsafeNetwork = allowUnsafeNetwork,
+            reportUpToDate = reportUpToDate,
         )
+        // Run as the one update job, since two updates of a source share its staging file
+        while (true) {
+            val (job, ours) = updateJobMutex.withLock {
+                updateJob?.takeIf { it.isActive }?.let { it to false }
+                    ?: (launchRemoteUpdateJob(request) to true)
+            }
+            job.join()
+            if (ours) return
+        }
     }
 
     /**
@@ -1934,26 +1919,34 @@ class PatchBundleRepository(
                 }
                 queued = true
             } else {
-                activeUpdateRequest = request
-                updateJob = scope.launch {
-                    try {
-                        performRemoteUpdateWithResult(request)
-                    } finally {
-                        updateJobMutex.withLock {
-                            updateJob = null
-                            activeUpdateRequest = null
-                        }
-                        val next = drainPendingUpdateRequests()
-                        if (next != null) {
-                            startRemoteUpdateJob(next)
-                        }
-                    }
-                }
+                launchRemoteUpdateJob(request)
             }
         }
         if (queued) {
             enqueueUpdateRequest(request)
         }
+    }
+
+    /**
+     * Starts [request] as [updateJob], which then takes up the requests queued meanwhile.
+     * Call it with [updateJobMutex] held and no job active.
+     */
+    private fun launchRemoteUpdateJob(request: UpdateRequest): Job {
+        activeUpdateRequest = request
+        return scope.launch {
+            try {
+                performRemoteUpdateWithResult(request)
+            } finally {
+                updateJobMutex.withLock {
+                    updateJob = null
+                    activeUpdateRequest = null
+                }
+                val next = drainPendingUpdateRequests()
+                if (next != null) {
+                    startRemoteUpdateJob(next)
+                }
+            }
+        }.also { updateJob = it }
     }
 
     private suspend fun performRemoteUpdateWithResult(request: UpdateRequest) = coroutineScope {
